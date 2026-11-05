@@ -760,6 +760,8 @@ t_test(bser watchman/test/BserTest.cpp)
 t_test(cache watchman/test/CacheTest.cpp)
 t_test(childproc watchman/test/ChildProcTest.cpp)
 t_test(fsdetect watchman/test/FSDetectTest.cpp)
+t_test(filesystem watchman/test/FileSystemTest.cpp watchman/fs/FileSystem.cpp
+  watchman/Errors.cpp)
 t_test(ignore watchman/test/IgnoreTest.cpp)
 # Linking this test needs the targets graph to be cleaned up.
 #t_test(inmemoryview watchman/test/InMemoryViewTest.cpp)
