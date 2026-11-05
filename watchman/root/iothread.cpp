@@ -519,21 +519,28 @@ void InMemoryView::crawler(
     // Pre-size our hash(es) if we can, so that we can avoid collisions
     // and re-hashing during initial crawl
     uint32_t num_dirs = 0;
+    auto num_files =
+        uint32_t(root->config.getInt("hint_num_files_per_dir", 64));
 #ifndef _WIN32
     struct stat st;
     int dfd = osdir->getFd();
     if (dfd != -1 && fstat(dfd, &st) == 0) {
+      // st.st_nlink is usually number of dirs + 2 (., ..).
+      // If it is less than 2 then it doesn't follow that convention.
+      // We just pass it through for the dir size hint and the hash
+      // table implementation will round that up to the next power of 2
       num_dirs = (uint32_t)st.st_nlink;
+      if (root->fs_type == "apfs") {
+        // APFS counts every entry, not just subdirectories: st_nlink is
+        // 2 + entries. That sizes the files table exactly, where the fixed
+        // hint wastes most of a 64-slot table on the typical small dir.
+        // Subdirectory counts aren't known up front, so let that table grow.
+        num_files = st.st_nlink > 2 ? uint32_t(st.st_nlink - 2) : 0;
+        num_dirs = 0;
+      }
     }
 #endif
-    // st.st_nlink is usually number of dirs + 2 (., ..).
-    // If it is less than 2 then it doesn't follow that convention.
-    // We just pass it through for the dir size hint and the hash
-    // table implementation will round that up to the next power of 2
-    apply_dir_size_hint(
-        dir,
-        num_dirs,
-        uint32_t(root->config.getInt("hint_num_files_per_dir", 64)));
+    apply_dir_size_hint(dir, num_dirs, num_files);
   }
 
   /* flag for delete detection */
