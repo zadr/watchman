@@ -6,7 +6,8 @@
  */
 
 #pragma once
-#include <unordered_map>
+#include <memory>
+#include <unordered_set>
 #include "watchman/watchman_string.h"
 
 struct watchman_file;
@@ -18,15 +19,44 @@ struct watchman_dir {
   /* the parent dir */
   watchman_dir* parent;
 
-  /* files contained in this dir (keyed by file->name) */
   struct Deleter {
     void operator()(watchman_file*) const;
   };
-  std::unordered_map<w_string_piece, std::unique_ptr<watchman_file, Deleter>>
-      files;
+  using FilePtr = std::unique_ptr<watchman_file, Deleter>;
+  using DirPtr = std::unique_ptr<watchman_dir>;
 
-  /* child dirs contained in this dir (keyed by dir->name) */
-  std::unordered_map<w_string_piece, std::unique_ptr<watchman_dir>> dirs;
+  /**
+   * Hashes and compares entries by the name each one stores, and looks them
+   * up by name, so the tables don't hold a separate copy of every key.
+   */
+  struct NameHash {
+    using is_transparent = void;
+    size_t operator()(w_string_piece name) const noexcept {
+      return name.hashValue();
+    }
+    size_t operator()(const FilePtr& file) const noexcept;
+    size_t operator()(const DirPtr& dir) const noexcept;
+  };
+  struct NameEqual {
+    using is_transparent = void;
+    template <typename A, typename B>
+    bool operator()(const A& a, const B& b) const noexcept {
+      return nameOf(a) == nameOf(b);
+    }
+
+   private:
+    static w_string_piece nameOf(w_string_piece name) {
+      return name;
+    }
+    static w_string_piece nameOf(const FilePtr& file);
+    static w_string_piece nameOf(const DirPtr& dir);
+  };
+
+  /* files contained in this dir, by file->getName() */
+  std::unordered_set<FilePtr, NameHash, NameEqual> files;
+
+  /* child dirs contained in this dir, by dir->name */
+  std::unordered_set<DirPtr, NameHash, NameEqual> dirs;
 
   // If we think this dir was deleted, we'll avoid recursing
   // to its children when processing deletes.

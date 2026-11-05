@@ -15,6 +15,22 @@ void watchman_dir::Deleter::operator()(watchman_file* file) const {
 watchman_dir::watchman_dir(w_string name, watchman_dir* parent)
     : name(std::move(name)), parent(parent) {}
 
+size_t watchman_dir::NameHash::operator()(const FilePtr& file) const noexcept {
+  return file->getName().hashValue();
+}
+
+size_t watchman_dir::NameHash::operator()(const DirPtr& dir) const noexcept {
+  return w_string_piece{dir->name}.hashValue();
+}
+
+w_string_piece watchman_dir::NameEqual::nameOf(const FilePtr& file) {
+  return file->getName();
+}
+
+w_string_piece watchman_dir::NameEqual::nameOf(const DirPtr& dir) {
+  return dir->name;
+}
+
 w_string watchman_dir::getFullPath() const {
   return getFullPathToChild(w_string_piece());
 }
@@ -24,7 +40,7 @@ watchman_file* watchman_dir::getChildFile(w_string_piece name_2) const {
   if (it == files.end()) {
     return nullptr;
   }
-  return it->second.get();
+  return it->get();
 }
 
 watchman_dir* watchman_dir::getChildDir(w_string_piece name_2) const {
@@ -32,7 +48,7 @@ watchman_dir* watchman_dir::getChildDir(w_string_piece name_2) const {
   if (it == dirs.end()) {
     return nullptr;
   }
-  return it->second.get();
+  return it->get();
 }
 
 w_string watchman_dir::getFullPathToChild(w_string_piece extra) const {

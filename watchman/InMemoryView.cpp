@@ -271,13 +271,8 @@ watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
       // later.
       w_string child_name(dir_component, (uint32_t)(sep - dir_component));
 
-      // Careful! dir->dirs is keyed by non-owning string pieces so the
-      // child_name MUST be stored or otherwise kept alive by the watchman_dir
-      // instance constructed below!
-      auto& new_child = dir->dirs[child_name];
-      new_child.reset(new watchman_dir(child_name, dir));
-
-      child = new_child.get();
+      child = dir->dirs.insert(std::make_unique<watchman_dir>(child_name, dir))
+                  .first->get();
     }
 
     parent = dir;
@@ -298,12 +293,9 @@ watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
   }
 
   w_string child_name(dir_component, (uint32_t)(dir_end - dir_component));
-  // Careful! parent->dirs is keyed by non-owning string pieces so the
-  // child_name MUST be stored or otherwise kept alive by the watchman_dir
-  // instance constructed below!
-  auto& new_child = parent->dirs[child_name];
-  new_child.reset(new watchman_dir(child_name, parent));
-  return new_child.get();
+  return parent->dirs
+      .insert(std::make_unique<watchman_dir>(child_name, parent))
+      .first->get();
 }
 
 const watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name) const {
@@ -358,18 +350,12 @@ watchman_file* ViewDatabase::getOrCreateChildFile(
   // to look up a child...
   auto it = dir->files.find(file_name);
   if (it != dir->files.end()) {
-    return it->second.get();
+    return it->get();
   }
 
-  // ... but take the shorter string from inside the file that
-  // we create as the key.
   auto file = watchman_file::make(file_name, dir);
-  auto& file_ptr = dir->files[file->getName()];
-  file_ptr = std::move(file);
-
-  file_ptr->ctime = ctime;
-
-  return file_ptr.get();
+  file->ctime = ctime;
+  return dir->files.insert(std::move(file)).first->get();
 }
 
 void ViewDatabase::markFileChanged(watchman_file* file, ClockStamp otime) {
@@ -395,7 +381,7 @@ void ViewDatabase::markDirDeleted(
   dir->last_check_existed = false;
 
   for (auto& it : dir->files) {
-    auto file = it.second.get();
+    auto file = it.get();
 
     if (file->exists) {
       auto full_name = dir->getFullPathToChild(file->getName());
@@ -407,7 +393,7 @@ void ViewDatabase::markDirDeleted(
 
   if (recursive) {
     for (auto& it : dir->dirs) {
-      auto child = it.second.get();
+      auto child = it.get();
 
       markDirDeleted(child, otime, true);
     }
@@ -505,7 +491,10 @@ ClockStamp InMemoryView::ageOutFile(
   // Remove the entry from the containing file hash; this will free it.
   // We don't need to stop watching it, because we already stopped watching it
   // when we marked it as !exists.
-  parent->files.erase(file->getName());
+  auto it = parent->files.find(file->getName());
+  if (it != parent->files.end()) {
+    parent->files.erase(it);
+  }
 
   return ageOutOtime;
 }
@@ -552,7 +541,10 @@ void InMemoryView::ageOut(
   for (auto& name : dirs_to_erase) {
     auto parent = view->resolveDir(name.dirName(), false);
     if (parent) {
-      parent->dirs.erase(name.baseName());
+      auto it = parent->dirs.find(name.baseName());
+      if (it != parent->dirs.end()) {
+        parent->dirs.erase(it);
+      }
     }
   }
 
@@ -669,7 +661,7 @@ void InMemoryView::dirGenerator(
     const watchman_dir* dir,
     uint32_t depth) const {
   for (auto& it : dir->files) {
-    auto file = it.second.get();
+    auto file = it.get();
     ctx->bumpNumWalked();
 
     w_query_process_file(
@@ -678,7 +670,7 @@ void InMemoryView::dirGenerator(
 
   if (depth > 0) {
     for (auto& it : dir->dirs) {
-      const auto child = it.second.get();
+      const auto child = it.get();
 
       dirGenerator(query, ctx, child, depth - 1);
     }
@@ -707,7 +699,7 @@ void InMemoryView::globGeneratorDoublestar(
 
   // First step is to walk the set of files contained in this node
   for (auto& it : dir->files) {
-    auto file = it.second.get();
+    auto file = it.get();
     auto file_name = file->getName();
 
     ctx->bumpNumWalked();
@@ -750,7 +742,7 @@ void InMemoryView::globGeneratorDoublestar(
 
   // And now walk down to any dirs; all dirs are eligible
   for (auto& it : dir->dirs) {
-    const auto child = it.second.get();
+    const auto child = it.get();
 
     if (!child->last_check_existed) {
       // Globs can only match files in dirs that exist
@@ -793,7 +785,7 @@ void InMemoryView::globGeneratorTree(
       } else {
         // Otherwise we have to walk and match
         for (auto& it : dir->dirs) {
-          const auto child_dir = it.second.get();
+          const auto child_dir = it.get();
 
           if (!child_dir->last_check_existed) {
             // Globs can only match files in dirs that exist
@@ -837,7 +829,7 @@ void InMemoryView::globGeneratorTree(
       } else {
         for (auto& it : dir->files) {
           // Otherwise we have to walk and match
-          auto file = it.second.get();
+          auto file = it.get();
           auto file_name = file->getName();
           ctx->bumpNumWalked();
 

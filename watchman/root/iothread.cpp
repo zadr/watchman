@@ -545,7 +545,7 @@ void InMemoryView::crawler(
 
   /* flag for delete detection */
   for (auto& it : dir->files) {
-    auto file = it.second.get();
+    auto file = it.get();
     if (file->exists) {
       file->maybe_deleted = true;
     }
@@ -607,7 +607,7 @@ void InMemoryView::crawler(
   // Anything still in maybe_deleted is actually deleted.
   // Arrange to re-process it shortly
   for (auto& it : dir->files) {
-    auto file = it.second.get();
+    auto file = it.get();
     if (file->exists &&
         (file->maybe_deleted || (file->stat.isDir() && recursive))) {
       coll.add(
@@ -724,7 +724,7 @@ void InMemoryView::crawlerParallel(
       dirView->dirs.reserve(dirResult.subdirCount);
     }
     for (auto& it : dirView->files) {
-      auto fileView = it.second.get();
+      auto fileView = it.get();
       if (fileView->exists) {
         fileView->maybe_deleted = true;
       }
@@ -754,7 +754,7 @@ void InMemoryView::crawlerParallel(
 
     // Step 1c: Mark for deletion.
     for (auto& it : dirView->files) {
-      auto fileView = it.second.get();
+      auto fileView = it.get();
       if (fileView->exists && fileView->maybe_deleted) {
         auto fullPath = dirView->getFullPathToChild(fileView->getName());
         processPath(
