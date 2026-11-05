@@ -997,8 +997,8 @@ void InMemoryView::statPath(
     if (!file->exists) {
       /* we're transitioning from deleted to existing,
        * so we're effectively new again */
-      file->ctime.ticks = mostRecentTick_;
-      file->ctime.timestamp = std::chrono::system_clock::to_time_t(pending.now);
+      file->ctime = ClockStamp{
+          mostRecentTick_, std::chrono::system_clock::to_time_t(pending.now)};
       /* if a dir was deleted and now exists again, we want
        * to crawl it again */
       recursive = true;

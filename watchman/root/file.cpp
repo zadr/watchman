@@ -6,6 +6,8 @@
  */
 
 #include "watchman/watchman_file.h"
+#include <limits>
+#include "watchman/Logging.h"
 #ifdef __APPLE__
 #include <sys/attr.h> // @manual
 #endif
@@ -35,15 +37,17 @@ void watchman_file::removeFromFileList() {
 std::unique_ptr<watchman_file, watchman_dir::Deleter> watchman_file::make(
     const w_string& name,
     watchman_dir* parent) {
-  auto file = (watchman_file*)calloc(
-      1, sizeof(watchman_file) + sizeof(uint32_t) + name.size() + 1);
+  w_check(
+      name.size() <= std::numeric_limits<uint16_t>::max(),
+      "file name too long");
+  auto file =
+      (watchman_file*)calloc(1, sizeof(watchman_file) + name.size() + 1);
   std::unique_ptr<watchman_file, watchman_dir::Deleter> filePtr(
       file, watchman_dir::Deleter());
 
-  auto lenPtr = (uint32_t*)(file + 1);
-  *lenPtr = name.size();
+  file->nameLength = static_cast<uint16_t>(name.size());
 
-  auto data = (char*)(lenPtr + 1);
+  auto data = (char*)(file + 1);
   memcpy(data, name.data(), name.size());
   data[name.size()] = 0;
 

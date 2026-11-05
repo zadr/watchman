@@ -84,6 +84,26 @@ enum class DType {
 #endif
 };
 
+#pragma pack(push, 4)
+
+// A timespec without its 4 bytes of padding. Every watchman_file holds three.
+struct FileTime {
+  int64_t tv_sec{0};
+  int32_t tv_nsec{0};
+
+  FileTime() = default;
+  /* implicit */ FileTime(struct timespec ts)
+      : tv_sec(ts.tv_sec), tv_nsec(static_cast<int32_t>(ts.tv_nsec)) {}
+  /* implicit */ operator struct timespec() const {
+    struct timespec ts;
+    ts.tv_sec = static_cast<time_t>(tv_sec);
+    ts.tv_nsec = tv_nsec;
+    return ts;
+  }
+};
+
+// 4-byte packing lets watchman_file place small fields in what would be
+// tail padding.
 struct FileInformation {
   // Wider fields first: mode_t and nlink_t are 16 bits on macOS, and every
   // watchman_file embeds one of these.
@@ -108,9 +128,9 @@ struct FileInformation {
   uint32_t fileAttributes{0};
 #endif
 
-  struct timespec atime{0, 0};
-  struct timespec mtime{0, 0};
-  struct timespec ctime{0, 0};
+  FileTime atime;
+  FileTime mtime;
+  FileTime ctime;
 
   // Returns the directory entry type for the file.
   DType dtype() const;
@@ -145,6 +165,8 @@ struct FileInformation {
   // files that were deleted between two revisions.
   static FileInformation makeDeletedFileInformation();
 };
+
+#pragma pack(pop)
 
 } // namespace watchman
 

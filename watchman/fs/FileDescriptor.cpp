@@ -196,9 +196,9 @@ FileInformation FileDescriptor::getInfo() const {
 
   FileInformation info(binfo.FileAttributes);
 
-  FILETIME_LARGE_INTEGER_to_timespec(binfo.CreationTime, &info.ctime);
-  FILETIME_LARGE_INTEGER_to_timespec(binfo.LastAccessTime, &info.atime);
-  FILETIME_LARGE_INTEGER_to_timespec(binfo.LastWriteTime, &info.mtime);
+  info.ctime = FILETIME_LARGE_INTEGER_to_timespec(binfo.CreationTime);
+  info.atime = FILETIME_LARGE_INTEGER_to_timespec(binfo.LastAccessTime);
+  info.mtime = FILETIME_LARGE_INTEGER_to_timespec(binfo.LastWriteTime);
 
   if (!GetFileInformationByHandleEx(
           (HANDLE)handle(), FileStandardInfo, &sinfo, sizeof(sinfo))) {

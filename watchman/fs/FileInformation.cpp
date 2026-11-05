@@ -21,9 +21,9 @@ FileInformation::FileInformation(const struct stat& st)
       dev(st.st_dev),
       mode(st.st_mode),
       nlink(st.st_nlink) {
-  memcpy(&atime, &st.WATCHMAN_ST_TIMESPEC(a), sizeof(atime));
-  memcpy(&mtime, &st.WATCHMAN_ST_TIMESPEC(m), sizeof(mtime));
-  memcpy(&ctime, &st.WATCHMAN_ST_TIMESPEC(c), sizeof(ctime));
+  atime = st.WATCHMAN_ST_TIMESPEC(a);
+  mtime = st.WATCHMAN_ST_TIMESPEC(m);
+  ctime = st.WATCHMAN_ST_TIMESPEC(c);
 }
 #endif
 

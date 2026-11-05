@@ -111,9 +111,9 @@ class WinDirHandle : public DirHandle {
 
     // Populate stat info to speed up the crawler() routine
     ent_.stat = FileInformation(info_->FileAttributes);
-    FILETIME_LARGE_INTEGER_to_timespec(info_->CreationTime, &ent_.stat.ctime);
-    FILETIME_LARGE_INTEGER_to_timespec(info_->LastAccessTime, &ent_.stat.atime);
-    FILETIME_LARGE_INTEGER_to_timespec(info_->LastWriteTime, &ent_.stat.mtime);
+    ent_.stat.ctime = FILETIME_LARGE_INTEGER_to_timespec(info_->CreationTime);
+    ent_.stat.atime = FILETIME_LARGE_INTEGER_to_timespec(info_->LastAccessTime);
+    ent_.stat.mtime = FILETIME_LARGE_INTEGER_to_timespec(info_->LastWriteTime);
     ent_.stat.size = info_->EndOfFile.QuadPart;
 
     // Advance the pointer to the next entry ready for the next read
@@ -168,9 +168,9 @@ class WinDirHandle : public DirHandle {
 
     // Populate stat info to speed up the crawler() routine
     ent_.stat = FileInformation(findFileData.dwFileAttributes);
-    FILETIME_to_timespec(&findFileData.ftCreationTime, &ent_.stat.ctime);
-    FILETIME_to_timespec(&findFileData.ftLastAccessTime, &ent_.stat.atime);
-    FILETIME_to_timespec(&findFileData.ftLastWriteTime, &ent_.stat.mtime);
+    ent_.stat.ctime = FILETIME_to_timespec(&findFileData.ftCreationTime);
+    ent_.stat.atime = FILETIME_to_timespec(&findFileData.ftLastAccessTime);
+    ent_.stat.mtime = FILETIME_to_timespec(&findFileData.ftLastWriteTime);
 
     LARGE_INTEGER fileSize;
     fileSize.HighPart = findFileData.nFileSizeHigh;

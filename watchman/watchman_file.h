@@ -11,6 +11,22 @@
 #include "watchman/fs/FileInformation.h"
 #include "watchman/watchman_dir.h"
 
+#pragma pack(push, 4)
+// ClockStamp without padding. The timestamp is unsigned 32-bit seconds,
+// which holds the observation time until 2106.
+struct CompactClockStamp {
+  watchman::ClockTicks ticks{0};
+  uint32_t timestamp{0};
+
+  CompactClockStamp() = default;
+  /* implicit */ CompactClockStamp(watchman::ClockStamp stamp)
+      : ticks(stamp.ticks), timestamp(static_cast<uint32_t>(stamp.timestamp)) {}
+  /* implicit */ operator watchman::ClockStamp() const {
+    return watchman::ClockStamp{ticks, static_cast<time_t>(timestamp)};
+  }
+};
+#pragma pack(pop)
+
 struct watchman_file {
   /* the parent dir */
   watchman_dir* parent;
@@ -21,25 +37,27 @@ struct watchman_file {
   struct watchman_file **prev, *next;
 
   /* the time we last observed a change to this file */
-  watchman::ClockStamp otime;
+  CompactClockStamp otime;
   /* the time we first observed this file OR the time
    * that this file switched from !exists to exists.
    * This is thus the "created time" */
-  watchman::ClockStamp ctime;
+  CompactClockStamp ctime;
+
+  /* cache stat results so we can tell if an entry
+   * changed */
+  watchman::FileInformation stat;
 
   /* whether we believe that this file still exists */
   bool exists;
   /* whether we think this file might not exist */
   bool maybe_deleted;
 
-  /* cache stat results so we can tell if an entry
-   * changed */
-  watchman::FileInformation stat;
+  /* the name is stored right after the struct, NUL terminated */
+  uint16_t nameLength;
 
   inline w_string_piece getName() const {
-    uint32_t len;
-    memcpy(&len, this + 1, 4);
-    return w_string_piece(reinterpret_cast<const char*>(this + 1) + 4, len);
+    return w_string_piece(
+        reinterpret_cast<const char*>(this + 1), nameLength);
   }
 
   void removeFromFileList();

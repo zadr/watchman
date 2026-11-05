@@ -340,9 +340,9 @@ const DirEntry* UnixDirHandle::readDir() {
     ent_.stat = watchman::FileInformation();
 
     ent_.stat.dev = item->dev;
-    memcpy(&ent_.stat.mtime, &item->mtime, sizeof(item->mtime));
-    memcpy(&ent_.stat.ctime, &item->ctime, sizeof(item->ctime));
-    memcpy(&ent_.stat.atime, &item->atime, sizeof(item->atime));
+    ent_.stat.mtime = item->mtime;
+    ent_.stat.ctime = item->ctime;
+    ent_.stat.atime = item->atime;
     ent_.stat.uid = item->uid;
     ent_.stat.gid = item->gid;
     ent_.stat.mode = item->mode & ~S_IFMT;

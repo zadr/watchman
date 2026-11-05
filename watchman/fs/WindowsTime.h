@@ -17,6 +17,18 @@ namespace watchman {
 void FILETIME_to_timespec(const FILETIME* ft, timespec* ts);
 void FILETIME_LARGE_INTEGER_to_timespec(LARGE_INTEGER ft, timespec* ts);
 
+inline timespec FILETIME_to_timespec(const FILETIME* ft) {
+  timespec ts;
+  FILETIME_to_timespec(ft, &ts);
+  return ts;
+}
+
+inline timespec FILETIME_LARGE_INTEGER_to_timespec(LARGE_INTEGER ft) {
+  timespec ts;
+  FILETIME_LARGE_INTEGER_to_timespec(ft, &ts);
+  return ts;
+}
+
 #endif
 
 } // namespace watchman
