@@ -47,6 +47,15 @@ class FileSystem {
       CaseSensitivity caseSensitive = CaseSensitivity::Unknown) = 0;
 
   /**
+   * getFileInformation, reporting failure as an error_code. The IO thread
+   * calls this once per changed path, and deleted paths are routine there;
+   * throwing for each costs more than the lookup itself.
+   */
+  virtual Result<FileInformation, std::error_code> tryGetFileInformation(
+      const char* path,
+      CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
+
+  /**
    * Watchman-specific API for creating an empty file on the filesystem.
    * On unix, the created file will have mode 0700.
    *
@@ -70,6 +79,11 @@ FileDescriptor openFileHandle(
 
 /** equivalent to lstat(2), but performs strict name checking */
 FileInformation getFileInformation(
+    const char* path,
+    CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
+
+/** getFileInformation without exceptions; see FileSystem. */
+Result<FileInformation, std::error_code> tryGetFileInformation(
     const char* path,
     CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
 

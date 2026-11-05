@@ -872,8 +872,10 @@ void InMemoryView::statPath(
     // without an extra getFileInformation() call.
     errcode = make_error_code(error_code::no_such_file_or_directory);
   } else {
-    try {
-      st = fileSystem_.getFileInformation(path.c_str(), root.case_sensitive);
+    auto result =
+        fileSystem_.tryGetFileInformation(path.c_str(), root.case_sensitive);
+    if (result.hasValue()) {
+      st = std::move(result).value();
       log(DBG,
           "getFileInformation(",
           path,
@@ -882,8 +884,8 @@ void InMemoryView::statPath(
           " dir=",
           fmt::ptr(dir_ent),
           "\n");
-    } catch (const std::system_error& exc) {
-      errcode = exc.code();
+    } else {
+      errcode = result.error();
       log(DBG,
           "getFileInformation(",
           path,
@@ -892,7 +894,7 @@ void InMemoryView::statPath(
           " dir=",
           fmt::ptr(dir_ent),
           " failed: ",
-          exc.what(),
+          errcode.message(),
           "\n");
     }
   }

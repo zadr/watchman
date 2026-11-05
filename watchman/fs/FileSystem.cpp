@@ -27,6 +27,12 @@
 #define CAN_OPEN_SYMLINKS 0
 #endif
 
+#if !CAN_OPEN_SYMLINKS && defined(__APPLE__) && defined(AT_SYMLINK_NOFOLLOW_ANY)
+#define WATCHMAN_STAT_NOFOLLOW_ANY 1
+#else
+#define WATCHMAN_STAT_NOFOLLOW_ANY 0
+#endif
+
 namespace watchman {
 
 namespace {
@@ -42,6 +48,12 @@ class RealFileSystem final : public FileSystem {
       const char* path,
       CaseSensitivity caseSensitive = CaseSensitivity::Unknown) override {
     return watchman::getFileInformation(path, caseSensitive);
+  }
+
+  Result<FileInformation, std::error_code> tryGetFileInformation(
+      const char* path,
+      CaseSensitivity caseSensitive = CaseSensitivity::Unknown) override {
+    return watchman::tryGetFileInformation(path, caseSensitive);
   }
 
   /**
@@ -66,16 +78,24 @@ RealFileSystem gRealFileSystem;
 
 FileSystem& realFileSystem = gRealFileSystem;
 
+Result<FileInformation, std::error_code> FileSystem::tryGetFileInformation(
+    const char* path,
+    CaseSensitivity caseSensitive) {
+  try {
+    return getFileInformation(path, caseSensitive);
+  } catch (const std::system_error& e) {
+    return e.code();
+  }
+}
+
 #if !CAN_OPEN_SYMLINKS
 
 namespace {
 
-/** Checks that the basename component of the input path exactly
- * matches the canonical case of the path on disk.
- * It only makes sense to call this function on a case insensitive filesystem.
- * If the case does not match, throws an exception. */
-void checkCanonicalBaseName(const char* path) {
 #ifdef __APPLE__
+/** Non-throwing core of checkCanonicalBaseName. Returns ENOENT in
+ * name_mismatch_category if the name differs from the on-disk name. */
+std::error_code canonicalBaseNameError(const char* path) {
   struct attrlist attrlist;
   struct {
     uint32_t len;
@@ -91,22 +111,32 @@ void checkCanonicalBaseName(const char* path) {
 
   if (getattrlist(path, &attrlist, &vomit, sizeof(vomit), FSOPT_NOFOLLOW) ==
       -1) {
-    throw std::system_error(
-        errno,
-        std::generic_category(),
-        fmt::format("checkCanonicalBaseName({}): getattrlist failed", path));
+    return std::error_code(errno, std::generic_category());
   }
 
   w_string_piece name(((char*)&vomit.ref) + vomit.ref.attr_dataoffset);
   if (name != base) {
+    return std::error_code(ENOENT, name_mismatch_category());
+  }
+  return {};
+}
+#endif
+
+/** Checks that the basename component of the input path exactly
+ * matches the canonical case of the path on disk.
+ * It only makes sense to call this function on a case insensitive filesystem.
+ * If the case does not match, throws an exception. */
+void checkCanonicalBaseName(const char* path) {
+#ifdef __APPLE__
+  if (auto ec = canonicalBaseNameError(path)) {
     throw std::system_error(
-        ENOENT,
-        name_mismatch_category(),
+        ec,
         fmt::format(
-            "checkCanonicalBaseName({}): ({}) doesn't match canonical base ({})",
+            "checkCanonicalBaseName({}): {}",
             path,
-            name,
-            base));
+            ec.category() == name_mismatch_category()
+                ? "doesn't match the canonical name on disk"
+                : "getattrlist failed"));
   }
 #else
   // Older Linux and BSDish systems are in this category.
@@ -260,6 +290,46 @@ FileDescriptor openFileHandle(
           opened));
 }
 
+Result<FileInformation, std::error_code> tryGetFileInformation(
+    const char* path,
+    CaseSensitivity caseSensitive) {
+#if WATCHMAN_STAT_NOFOLLOW_ANY
+  // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
+  // NOFOLLOW_ANY fails with ELOOP on a symlink in any intermediate component
+  // and still lstat()s a symlink leaf. A symlink in the middle means the path
+  // we were told about no longer exists as a real directory chain.
+  struct stat st;
+  if (fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW_ANY)) {
+    int err = errno;
+    return std::error_code(err == ELOOP ? ENOENT : err, std::generic_category());
+  }
+
+  if (caseSensitive == CaseSensitivity::Unknown) {
+    caseSensitive = getCaseSensitivityForPath(path);
+  }
+  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
+    // The lookup above matched case-insensitively. Require the canonical case
+    // for the parent and leaf names, as openFileHandle's strict check did.
+    w_string_piece pathPiece(path);
+    if (auto ec =
+            canonicalBaseNameError(pathPiece.dirName().asWString().c_str())) {
+      return ec;
+    }
+    if (auto ec = canonicalBaseNameError(path)) {
+      return ec;
+    }
+  }
+
+  return FileInformation(st);
+#else
+  try {
+    return getFileInformation(path, caseSensitive);
+  } catch (const std::system_error& e) {
+    return e.code();
+  }
+#endif
+}
+
 FileInformation getFileInformation(
     const char* path,
     CaseSensitivity caseSensitive) {
@@ -271,30 +341,13 @@ FileInformation getFileInformation(
   auto handle = openFileHandle(path, options);
   auto info = handle.getInfo();
   return info;
-#elif defined(__APPLE__) && defined(AT_SYMLINK_NOFOLLOW_ANY)
-  // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
-  // NOFOLLOW_ANY fails with ELOOP on a symlink in any intermediate component
-  // and still lstat()s a symlink leaf. A symlink in the middle means the path
-  // we were told about no longer exists as a real directory chain.
-  struct stat st;
-  if (fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW_ANY)) {
-    int err = errno;
+#elif WATCHMAN_STAT_NOFOLLOW_ANY
+  auto result = tryGetFileInformation(path, caseSensitive);
+  if (result.hasError()) {
     throw std::system_error(
-        err == ELOOP ? ENOENT : err, std::generic_category(), "fstatat");
+        result.error(), fmt::format("getFileInformation({})", path));
   }
-
-  if (caseSensitive == CaseSensitivity::Unknown) {
-    caseSensitive = getCaseSensitivityForPath(path);
-  }
-  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
-    // The lookup above matched case-insensitively. Require the canonical case
-    // for the parent and leaf names, as openFileHandle's strict check did.
-    w_string_piece pathPiece(path);
-    checkCanonicalBaseName(pathPiece.dirName().asWString().c_str());
-    checkCanonicalBaseName(path);
-  }
-
-  return FileInformation(st);
+  return std::move(result).value();
 #else
   // Since the leaf of the path may be a symlink, and this system doesn't
   // allow opening symlinks for stat purposes, we have to resort to performing

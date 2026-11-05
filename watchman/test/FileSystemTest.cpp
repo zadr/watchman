@@ -48,13 +48,18 @@ class GetFileInformationTest : public ::testing::Test {
     std::ofstream(path) << "x";
   }
 
+  // Checks that the throwing and error_code variants agree.
   std::error_code statError(const std::string& path) {
+    std::error_code thrown;
     try {
       getFileInformation(path.c_str(), cs_);
-      return {};
     } catch (const std::system_error& e) {
-      return e.code();
+      thrown = e.code();
     }
+    auto result = tryGetFileInformation(path.c_str(), cs_);
+    std::error_code returned = result.hasError() ? result.error() : std::error_code{};
+    EXPECT_EQ(thrown, returned) << path;
+    return returned;
   }
 
   folly::test::TemporaryDirectory tmp_{"wm-fs"};
