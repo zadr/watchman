@@ -7,7 +7,9 @@
 # pyre-unsafe
 
 
+import json
 import os
+import sys
 
 import pywatchman
 from watchman.integration.lib import WatchmanInstance, WatchmanTestCase
@@ -161,3 +163,61 @@ class TestWatchProject(WatchmanTestCase.WatchmanTestCase):
                 res = self.watchmanCommand("watch-project", inner_dirs[0])
                 self.assertEqual(d, norm_absolute_path(res["watch"]))
                 self.assertEqual("a", norm_relative_path(res["relative_path"]))
+
+    def readSavedRoots(self, inst):
+        try:
+            with open(inst.state_file) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return {
+            norm_absolute_path(w["path"]): [t["name"] for t in w["triggers"]]
+            for w in state.get("watched", [])
+        }
+
+    def runRestoreNestedTest(self, add_trigger: bool) -> None:
+        outer = self.mkdtemp()
+        inner = os.path.join(outer, "apps", "inner")
+        os.makedirs(inner)
+        make_empty_watchmanconfig(inner)
+
+        with WatchmanInstance.Instance() as inst:
+            inst.start()
+            client = self.getClient(inst)
+            client.query("watch", outer)
+            client.query("watch", inner)
+            expected = {outer: [], inner: []}
+            if add_trigger:
+                client.query(
+                    "trigger",
+                    inner,
+                    {
+                        "name": "t",
+                        "expression": ["name", "never-matches"],
+                        "command": [sys.executable, "-c", "pass"],
+                    },
+                )
+                expected[inner] = ["t"]
+            self.assertWaitForEqual(expected, lambda: self.readSavedRoots(inst))
+            client.close()
+
+            inst.stop()
+            inst.start()
+            client = self.getClient(inst)
+            roots = {
+                norm_absolute_path(r) for r in client.query("watch-list")["roots"]
+            }
+            client.close()
+
+            self.assertIn(outer, roots)
+            if add_trigger:
+                self.assertIn(inner, roots)
+            else:
+                self.assertNotIn(inner, roots)
+                self.assertIn("not restoring watch on", inst.getServerLogContents())
+
+    def test_restoreSkipsNestedRoot(self) -> None:
+        self.runRestoreNestedTest(add_trigger=False)
+
+    def test_restoreKeepsNestedRootWithTrigger(self) -> None:
+        self.runRestoreNestedTest(add_trigger=True)

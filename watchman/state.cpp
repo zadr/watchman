@@ -8,6 +8,8 @@
 #include "watchman/state.h"
 #include <folly/String.h>
 #include <folly/Synchronized.h>
+#include <algorithm>
+#include <vector>
 #include "watchman/Errors.h"
 #include "watchman/Logging.h"
 #include "watchman/Options.h"
@@ -191,6 +193,14 @@ bool w_root_load_state(const json_ref& state) {
     return false;
   }
 
+  std::vector<w_string_piece> saved_paths;
+  for (i = 0; i < json_array_size(*watched); i++) {
+    auto path = json_object_get(watched->at(i), "path");
+    if (path && path->isString()) {
+      saved_paths.push_back(json_string_value(*path));
+    }
+  }
+
   for (i = 0; i < json_array_size(*watched); i++) {
     const auto& obj = watched->at(i);
     bool created = false;
@@ -199,6 +209,27 @@ bool w_root_load_state(const json_ref& state) {
     auto triggers = obj.get("triggers");
     auto path = json_object_get(obj, "path");
     const char* filename = path ? json_string_value(*path) : nullptr;
+
+    // A root nested inside another saved root duplicates its crawl and is no
+    // longer handed out by watch-project, so let a client recreate it on
+    // demand instead. Triggers only live on the root they were set on.
+    if (filename && json_array_size(triggers) == 0) {
+      w_string_piece name(filename);
+      auto enclosing = std::find_if(
+          saved_paths.begin(), saved_paths.end(), [&](w_string_piece outer) {
+            return name.size() > outer.size() && name.startsWith(outer) &&
+                is_slash(name[outer.size()]);
+          });
+      if (enclosing != saved_paths.end()) {
+        log(ERR,
+            "not restoring watch on ",
+            name,
+            " because it is nested inside ",
+            *enclosing,
+            "\n");
+        continue;
+      }
+    }
 
     std::shared_ptr<Root> root;
     try {
