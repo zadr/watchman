@@ -6,8 +6,8 @@
  */
 
 #pragma once
+#include <folly/container/F14Set.h>
 #include <memory>
-#include <unordered_set>
 #include "watchman/watchman_string.h"
 
 struct watchman_file;
@@ -53,10 +53,10 @@ struct watchman_dir {
   };
 
   /* files contained in this dir, by file->getName() */
-  std::unordered_set<FilePtr, NameHash, NameEqual> files;
+  folly::F14ValueSet<FilePtr, NameHash, NameEqual> files;
 
   /* child dirs contained in this dir, by dir->name */
-  std::unordered_set<DirPtr, NameHash, NameEqual> dirs;
+  folly::F14ValueSet<DirPtr, NameHash, NameEqual> dirs;
 
   // If we think this dir was deleted, we'll avoid recursing
   // to its children when processing deletes.
