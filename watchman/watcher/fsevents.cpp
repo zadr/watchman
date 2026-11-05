@@ -311,10 +311,28 @@ propagate:
     }
   }
 
-  if (!items.empty()) {
+  if (items.empty()) {
+    return;
+  }
+  if (!watcher->sink_) {
     auto wlock = watcher->items_.lock();
     wlock->items.push_back(std::move(items));
     watcher->fseCond_.notify_one();
+    return;
+  }
+
+  // Translate on this thread and hand the result straight to the IO thread,
+  // rather than waking the notify thread to do it.
+  PendingChanges changes;
+  bool cancelSelf = watcher->addItemsToPending(
+      root, items, changes, std::chrono::system_clock::now());
+  if (!changes.empty()) {
+    auto lock = watcher->sink_->lock();
+    lock->append(changes.stealItems(), changes.stealSyncs());
+    lock->ping();
+  }
+  if (cancelSelf) {
+    root->cancel("Watcher noticed root has been removed.");
   }
 }
 
@@ -678,6 +696,12 @@ folly::SemiFuture<folly::Unit> FSEventsWatcher::flushPendingEvents() {
 
   // Now return a Future that is fulfilled when all of the items have been
   // processed by InMemoryView.
+  if (sink_) {
+    auto lock = sink_->lock();
+    lock->addSync(std::move(p));
+    lock->ping();
+    return std::move(f);
+  }
   auto wlock = items_.lock();
   wlock->syncs.push_back(std::move(p));
   fseCond_.notify_one();
@@ -764,10 +788,67 @@ bool isRootRemoved(
 }
 } // namespace
 
+bool FSEventsWatcher::addItemsToPending(
+    const std::shared_ptr<Root>& root,
+    const std::vector<watchman_fsevent>& items,
+    PendingChanges& coll,
+    std::chrono::system_clock::time_point now) {
+  char flags_label[128];
+  for (auto& item : items) {
+    w_expand_flags(kflags, item.flags, flags_label, sizeof(flags_label));
+    logf(DBG, "fsevents: got {} {:x} {}\n", item.path, item.flags, flags_label);
+
+    if (item.flags &
+        (kFSEventStreamEventFlagUserDropped |
+         kFSEventStreamEventFlagKernelDropped)) {
+      if (!subdir) {
+        root->scheduleRecrawl(flags_label);
+        return false;
+      } else {
+        w_assert(
+            item.flags & kFSEventStreamEventFlagMustScanSubDirs,
+            "dropped events should specify kFSEventStreamEventFlagMustScanSubDirs");
+        auto reason = fmt::format("{}: {}", *subdir, flags_label);
+        root->recrawlTriggered(reason.c_str());
+      }
+    }
+
+    if (item.flags & kFSEventStreamEventFlagUnmount) {
+      logf(
+          ERR, "kFSEventStreamEventFlagUnmount {}, cancel watch\n", item.path);
+      return true;
+    }
+
+    if ((item.flags & kFSEventStreamEventFlagItemRemoved) &&
+        isRootRemoved(item.path, root->root_path, subdir)) {
+      log(ERR, "Root directory removed, cancel watch\n");
+      return true;
+    }
+
+    if (item.flags & kFSEventStreamEventFlagRootChanged) {
+      logf(
+          ERR,
+          "kFSEventStreamEventFlagRootChanged {}, cancel watch\n",
+          item.path);
+      return true;
+    }
+
+    if (!hasFileWatching_ && item.path.size() < root->root_path.size()) {
+      // The test_watch_del_all appear to trigger this?
+      log(ERR,
+          "Got an event on a directory parent to the root directory: {}?\n",
+          item.path);
+      continue;
+    }
+
+    addFSEventToPending(coll, item, root->root_path, now, hasFileWatching_);
+  }
+  return false;
+}
+
 Watcher::ConsumeNotifyRet FSEventsWatcher::consumeNotify(
     const std::shared_ptr<Root>& root,
     PendingChanges& coll) {
-  char flags_label[128];
   std::vector<std::vector<watchman_fsevent>> items;
   std::vector<folly::Promise<folly::Unit>> syncs;
   bool cancelSelf = false;
@@ -779,67 +860,8 @@ Watcher::ConsumeNotifyRet FSEventsWatcher::consumeNotify(
   }
 
   auto now = std::chrono::system_clock::now();
-
   for (auto& vec : items) {
-    for (auto& item : vec) {
-      w_expand_flags(kflags, item.flags, flags_label, sizeof(flags_label));
-      logf(
-          DBG,
-          "fsevents: got {} {:x} {}\n",
-          item.path,
-          item.flags,
-          flags_label);
-
-      if (item.flags &
-          (kFSEventStreamEventFlagUserDropped |
-           kFSEventStreamEventFlagKernelDropped)) {
-        if (!subdir) {
-          root->scheduleRecrawl(flags_label);
-          break;
-        } else {
-          w_assert(
-              item.flags & kFSEventStreamEventFlagMustScanSubDirs,
-              "dropped events should specify kFSEventStreamEventFlagMustScanSubDirs");
-          auto reason = fmt::format("{}: {}", *subdir, flags_label);
-          root->recrawlTriggered(reason.c_str());
-        }
-      }
-
-      if (item.flags & kFSEventStreamEventFlagUnmount) {
-        logf(
-            ERR,
-            "kFSEventStreamEventFlagUnmount {}, cancel watch\n",
-            item.path);
-        cancelSelf = true;
-        break;
-      }
-
-      if ((item.flags & kFSEventStreamEventFlagItemRemoved) &&
-          isRootRemoved(item.path, root->root_path, subdir)) {
-        log(ERR, "Root directory removed, cancel watch\n");
-        cancelSelf = true;
-        break;
-      }
-
-      if (item.flags & kFSEventStreamEventFlagRootChanged) {
-        logf(
-            ERR,
-            "kFSEventStreamEventFlagRootChanged {}, cancel watch\n",
-            item.path);
-        cancelSelf = true;
-        break;
-      }
-
-      if (!hasFileWatching_ && item.path.size() < root->root_path.size()) {
-        // The test_watch_del_all appear to trigger this?
-        log(ERR,
-            "Got an event on a directory parent to the root directory: {}?\n",
-            item.path);
-        continue;
-      }
-
-      addFSEventToPending(coll, item, root->root_path, now, hasFileWatching_);
-    }
+    cancelSelf |= addItemsToPending(root, vec, coll, now);
   }
 
   for (auto& sync : syncs) {
@@ -847,6 +869,11 @@ Watcher::ConsumeNotifyRet FSEventsWatcher::consumeNotify(
   }
 
   return {cancelSelf};
+}
+
+bool FSEventsWatcher::deliverTo(PendingCollection& sink) {
+  sink_ = &sink;
+  return true;
 }
 
 void FSEventsWatcher::stopThreads() {

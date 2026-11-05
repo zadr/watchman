@@ -20,6 +20,7 @@ namespace watchman {
 void InMemoryView::notifyThread(const std::shared_ptr<Root>& root) {
   PendingChanges fromWatcher;
 
+  const bool direct = watcher_->deliverTo(pendingFromWatcher_);
   if (!watcher_->start(root)) {
     logf(
         ERR,
@@ -36,6 +37,9 @@ void InMemoryView::notifyThread(const std::shared_ptr<Root>& root) {
   // signal that we're done here, so that we can start the
   // io thread after this point
   pendingFromWatcher_.lock()->ping();
+  if (direct) {
+    return;
+  }
 
   while (!stopThreads_.load(std::memory_order_acquire)) {
     // big number because not all watchers can deal with

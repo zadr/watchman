@@ -97,6 +97,16 @@ class Watcher : public std::enable_shared_from_this<Watcher> {
   };
 
   /**
+   * Asks the watcher to add notifications to `sink` as they arrive, from its
+   * own thread, instead of queueing them for consumeNotify. Saves a thread
+   * handoff per batch. Called before start(). Returns false if unsupported;
+   * the notify thread then drives waitNotify and consumeNotify as usual.
+   */
+  virtual bool deliverTo(PendingCollection& /*sink*/) {
+    return false;
+  }
+
+  /**
    * Wait for an inotify event to become available.
    * Returns whether events are available, the timeout elapsed, or the watcher
    * was signaled to terminate.

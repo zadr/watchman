@@ -67,6 +67,7 @@ class FSEventsWatcher : public Watcher {
       PendingChanges& changes) override;
 
   WaitNotifyResult waitNotify(int timeoutms) override;
+  bool deliverTo(PendingCollection& sink) override;
   void stopThreads() override;
   void FSEventsThread(const std::shared_ptr<Root>& root);
 
@@ -83,6 +84,12 @@ class FSEventsWatcher : public Watcher {
       FSEventsWatcher* watcher,
       FSEventStreamEventId since,
       std::optional<w_string>& failure_reason);
+  /** Returns true if the watch should be cancelled. */
+  bool addItemsToPending(
+      const std::shared_ptr<Root>& root,
+      const std::vector<watchman_fsevent>& items,
+      PendingChanges& coll,
+      std::chrono::system_clock::time_point now);
   static void fse_callback(
       ConstFSEventStreamRef,
       void* clientCallBackInfo,
@@ -103,6 +110,9 @@ class FSEventsWatcher : public Watcher {
     std::vector<folly::Promise<folly::Unit>> syncs;
   };
   folly::Synchronized<Items, std::mutex> items_;
+  // Set by deliverTo. Owned by the view, which the root keeps alive while
+  // callbacks or flushes can run.
+  PendingCollection* sink_{nullptr};
 
   std::unique_ptr<FSEventsStream> stream_;
   const bool attemptResyncOnDrop_{false};
