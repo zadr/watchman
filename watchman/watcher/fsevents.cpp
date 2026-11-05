@@ -698,6 +698,55 @@ Watcher::WaitNotifyResult FSEventsWatcher::waitNotify(int timeoutms) {
       : WaitNotifyResult::Timeout;
 }
 
+void addFSEventToPending(
+    PendingChanges& coll,
+    const watchman_fsevent& item,
+    const w_string& rootPath,
+    std::chrono::system_clock::time_point now,
+    bool hasFileWatching) {
+  PendingFlags flags = W_PENDING_VIA_NOTIFY;
+
+  if (item.flags &
+      (kFSEventStreamEventFlagMustScanSubDirs |
+       kFSEventStreamEventFlagItemRenamed)) {
+    flags.set(W_PENDING_RECURSIVE);
+  } else if (item.flags & kFSEventStreamEventFlagItemRenamed) {
+    // FSEvents does not reliably report the individual files renamed in the
+    // hierarchy.
+    flags.set(W_PENDING_NONRECURSIVE_SCAN);
+  } else if (!hasFileWatching) {
+    flags.set(W_PENDING_NONRECURSIVE_SCAN);
+  }
+
+  if (item.flags &
+      (kFSEventStreamEventFlagUserDropped |
+       kFSEventStreamEventFlagKernelDropped)) {
+    flags.set(W_PENDING_IS_DESYNCED);
+  }
+
+  coll.add(item.path, now, flags);
+
+  if (hasFileWatching && item.path.size() > rootPath.size() &&
+      (item.flags &
+       (kFSEventStreamEventFlagItemRenamed |
+        kFSEventStreamEventFlagItemCreated |
+        kFSEventStreamEventFlagItemRemoved))) {
+    // When the list of directory entries is modified, we hear
+    // about the modification, but perhaps not the directory
+    // change itself. Its mtime probably changed, so synthesize
+    // an event to consider it for examination.
+    //
+    // Note these two issues:
+    // - https://github.com/facebook/watchman/issues/305
+    // - https://github.com/facebook/watchman/issues/307
+    //
+    // Watchman does not guarantee minimal notifications, but limiting
+    // the event types above should avoid unnecessary results in
+    // queries.
+    coll.add(item.path.dirName(), now, W_PENDING_VIA_NOTIFY);
+  }
+}
+
 namespace {
 bool isRootRemoved(
     const w_string& path,
@@ -784,47 +833,7 @@ Watcher::ConsumeNotifyRet FSEventsWatcher::consumeNotify(
         continue;
       }
 
-      PendingFlags flags = W_PENDING_VIA_NOTIFY;
-
-      if (item.flags &
-          (kFSEventStreamEventFlagMustScanSubDirs |
-           kFSEventStreamEventFlagItemRenamed)) {
-        flags.set(W_PENDING_RECURSIVE);
-      } else if (item.flags & kFSEventStreamEventFlagItemRenamed) {
-        // FSEvents does not reliably report the individual files renamed in the
-        // hierarchy.
-        flags.set(W_PENDING_NONRECURSIVE_SCAN);
-      } else if (!hasFileWatching_) {
-        flags.set(W_PENDING_NONRECURSIVE_SCAN);
-      }
-
-      if (item.flags &
-          (kFSEventStreamEventFlagUserDropped |
-           kFSEventStreamEventFlagKernelDropped)) {
-        flags.set(W_PENDING_IS_DESYNCED);
-      }
-
-      coll.add(item.path, now, flags);
-
-      if (hasFileWatching_ && item.path.size() > root->root_path.size() &&
-          (item.flags &
-           (kFSEventStreamEventFlagItemRenamed |
-            kFSEventStreamEventFlagItemCreated |
-            kFSEventStreamEventFlagItemRemoved))) {
-        // When the list of directory entries is modified, we hear
-        // about the modification, but perhaps not the directory
-        // change itself. Its mtime probably changed, so synthesize
-        // an event to consider it for examination.
-        //
-        // Note these two issues:
-        // - https://github.com/facebook/watchman/issues/305
-        // - https://github.com/facebook/watchman/issues/307
-        //
-        // Watchman does not guarantee minimal notifications, but limiting
-        // the event types above should avoid unnecessary results in
-        // queries.
-        coll.add(item.path.dirName(), now, W_PENDING_VIA_NOTIFY);
-      }
+      addFSEventToPending(coll, item, root->root_path, now, hasFileWatching_);
     }
   }
 

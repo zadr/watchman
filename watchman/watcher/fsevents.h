@@ -30,6 +30,17 @@ struct watchman_fsevent {
       : path(std::move(path)), flags(flags) {}
 };
 
+/**
+ * Translate one FSEvents event into PendingChanges entries. Split out of
+ * FSEventsWatcher::consumeNotify so benchmarks can drive it without a Root.
+ */
+void addFSEventToPending(
+    PendingChanges& coll,
+    const watchman_fsevent& item,
+    const w_string& rootPath,
+    std::chrono::system_clock::time_point now,
+    bool hasFileWatching);
+
 class FSEventsWatcher : public Watcher {
  public:
   explicit FSEventsWatcher(
