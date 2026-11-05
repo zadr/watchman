@@ -85,11 +85,8 @@ enum class DType {
 };
 
 struct FileInformation {
-  // On POSIX systems, the complete mode information.
-  // On Windows, this is lossy wrt. symlink information,
-  // so it is preferable to use isSymlink() rather than
-  // S_ISLNK() on the mode value.
-  mode_t mode{0};
+  // Wider fields first: mode_t and nlink_t are 16 bits on macOS, and every
+  // watchman_file embeds one of these.
   uint64_t size{0};
 
   // On Windows systems, these fields are approximated
@@ -100,6 +97,11 @@ struct FileInformation {
   gid_t gid{0};
   ino_t ino{0};
   dev_t dev{0};
+  // On POSIX systems, the complete mode information.
+  // On Windows, this is lossy wrt. symlink information,
+  // so it is preferable to use isSymlink() rather than
+  // S_ISLNK() on the mode value.
+  mode_t mode{0};
   nlink_t nlink{0};
 
 #ifdef _WIN32
