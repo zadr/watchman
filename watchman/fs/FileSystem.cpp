@@ -270,6 +270,30 @@ FileInformation getFileInformation(
   auto handle = openFileHandle(path, options);
   auto info = handle.getInfo();
   return info;
+#elif defined(__APPLE__) && defined(AT_SYMLINK_NOFOLLOW_ANY)
+  // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
+  // NOFOLLOW_ANY fails with ELOOP on a symlink in any intermediate component
+  // and still lstat()s a symlink leaf. A symlink in the middle means the path
+  // we were told about no longer exists as a real directory chain.
+  struct stat st;
+  if (fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW_ANY)) {
+    int err = errno;
+    throw std::system_error(
+        err == ELOOP ? ENOENT : err, std::generic_category(), "fstatat");
+  }
+
+  if (caseSensitive == CaseSensitivity::Unknown) {
+    caseSensitive = getCaseSensitivityForPath(path);
+  }
+  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
+    // The lookup above matched case-insensitively. Require the canonical case
+    // for the parent and leaf names, as openFileHandle's strict check did.
+    w_string_piece pathPiece(path);
+    checkCanonicalBaseName(pathPiece.dirName().asWString().c_str());
+    checkCanonicalBaseName(path);
+  }
+
+  return FileInformation(st);
 #else
   // Since the leaf of the path may be a symlink, and this system doesn't
   // allow opening symlinks for stat purposes, we have to resort to performing

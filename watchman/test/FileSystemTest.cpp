@@ -84,7 +84,15 @@ TEST_F(GetFileInformationTest, missing) {
 }
 
 TEST_F(GetFileInformationTest, symlinkedParentIsRejected) {
+#ifdef __APPLE__
+  // Reported as gone so the IO thread prunes it. The generic path returns
+  // ELOOP from open(O_NOFOLLOW), which the IO thread logs and ignores.
+  EXPECT_EQ(
+      std::errc::no_such_file_or_directory,
+      statError(root_ + "/DirLink/File.txt"));
+#else
   EXPECT_TRUE(statError(root_ + "/DirLink/File.txt"));
+#endif
 }
 
 TEST_F(GetFileInformationTest, symlinkedAncestorIsRejected) {
