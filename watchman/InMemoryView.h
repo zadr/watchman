@@ -23,6 +23,7 @@
 #include "watchman/WatchmanConfig.h"
 #include "watchman/fs/DirHandle.h"
 #include "watchman/query/FileResult.h"
+#include "watchman/watchman_file.h"
 #include "watchman/watchman_string.h"
 #include "watchman/watchman_system.h"
 
@@ -127,6 +128,10 @@ class ViewDatabase {
 
   /* the most recently changed file */
   watchman_file* latestFile_ = nullptr;
+
+  // Declared before rootDir_ so it outlives every file. Heap allocated
+  // because slabs point back at it.
+  std::unique_ptr<FilePool> filePool_;
 
   std::unique_ptr<watchman_dir> rootDir_;
 

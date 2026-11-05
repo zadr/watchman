@@ -233,6 +233,7 @@ std::optional<FileResult::ContentHash> InMemoryFileResult::getContentSha1() {
 
 ViewDatabase::ViewDatabase(const w_string& root_path)
     : rootPath_{root_path},
+      filePool_{std::make_unique<FilePool>()},
       rootDir_{std::make_unique<watchman_dir>(root_path, nullptr)} {}
 
 watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
@@ -353,7 +354,7 @@ watchman_file* ViewDatabase::getOrCreateChildFile(
     return it->get();
   }
 
-  auto file = watchman_file::make(file_name, dir);
+  auto file = watchman_file::make(file_name, dir, *filePool_);
   file->ctime = ctime;
   return dir->files.insert(std::move(file)).first->get();
 }
