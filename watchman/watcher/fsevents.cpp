@@ -706,14 +706,19 @@ void addFSEventToPending(
     bool hasFileWatching) {
   PendingFlags flags = W_PENDING_VIA_NOTIFY;
 
-  if (item.flags &
-      (kFSEventStreamEventFlagMustScanSubDirs |
-       kFSEventStreamEventFlagItemRenamed)) {
+  // FSEvents does not report the individual children of a renamed directory,
+  // so those need a recursive crawl. A rename that FSEvents says is only a
+  // file or symlink has no children. Coalesced events can carry several type
+  // flags; IsDir wins.
+  const bool renamed = item.flags & kFSEventStreamEventFlagItemRenamed;
+  const bool maybeDir = (item.flags & kFSEventStreamEventFlagItemIsDir) ||
+      !(item.flags &
+        (kFSEventStreamEventFlagItemIsFile |
+         kFSEventStreamEventFlagItemIsSymlink));
+
+  if ((item.flags & kFSEventStreamEventFlagMustScanSubDirs) ||
+      (renamed && maybeDir)) {
     flags.set(W_PENDING_RECURSIVE);
-  } else if (item.flags & kFSEventStreamEventFlagItemRenamed) {
-    // FSEvents does not reliably report the individual files renamed in the
-    // hierarchy.
-    flags.set(W_PENDING_NONRECURSIVE_SCAN);
   } else if (!hasFileWatching) {
     flags.set(W_PENDING_NONRECURSIVE_SCAN);
   }
