@@ -290,26 +290,26 @@ FileDescriptor openFileHandle(
           opened));
 }
 
-Result<FileInformation, std::error_code> tryGetFileInformation(
-    const char* path,
-    CaseSensitivity caseSensitive) {
 #if WATCHMAN_STAT_NOFOLLOW_ANY
-  // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
-  // NOFOLLOW_ANY fails with ELOOP on a symlink in any intermediate component
-  // and still lstat()s a symlink leaf. A symlink in the middle means the path
-  // we were told about no longer exists as a real directory chain.
+namespace {
+
+std::error_code lookupError(int err) {
+  // NOFOLLOW_ANY fails with ELOOP on a symlink in any intermediate component.
+  // A symlink in the middle means the path we were told about no longer
+  // exists as a real directory chain.
+  return std::error_code(err == ELOOP ? ENOENT : err, std::generic_category());
+}
+
+/** fstatat, plus canonical-case checks on the parent and leaf names when
+ * checkNames is set. */
+Result<FileInformation, std::error_code> statCheckingNames(
+    const char* path,
+    bool checkNames) {
   struct stat st;
   if (fstatat(AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW_ANY)) {
-    int err = errno;
-    return std::error_code(err == ELOOP ? ENOENT : err, std::generic_category());
+    return lookupError(errno);
   }
-
-  if (caseSensitive == CaseSensitivity::Unknown) {
-    caseSensitive = getCaseSensitivityForPath(path);
-  }
-  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
-    // The lookup above matched case-insensitively. Require the canonical case
-    // for the parent and leaf names, as openFileHandle's strict check did.
+  if (checkNames) {
     w_string_piece pathPiece(path);
     if (auto ec =
             canonicalBaseNameError(pathPiece.dirName().asWString().c_str())) {
@@ -319,8 +319,144 @@ Result<FileInformation, std::error_code> tryGetFileInformation(
       return ec;
     }
   }
-
   return FileInformation(st);
+}
+
+// Field order follows the ATTR_* bit order, which is the order getattrlist
+// packs them in. FSOPT_PACK_INVAL_ATTRS keeps the common fields at fixed
+// offsets; the file fields are only present for non-directories.
+struct CanonicalStatAttrs {
+  uint32_t len;
+  attribute_set_t returned; // ATTR_CMN_RETURNED_ATTRS
+  dev_t dev; // ATTR_CMN_DEVID
+  fsobj_type_t objtype; // ATTR_CMN_OBJTYPE
+  struct timespec mtime; // ATTR_CMN_MODTIME
+  struct timespec ctime; // ATTR_CMN_CHGTIME
+  struct timespec atime; // ATTR_CMN_ACCTIME
+  uid_t uid; // ATTR_CMN_OWNERID
+  gid_t gid; // ATTR_CMN_GRPID
+  uint32_t mode; // ATTR_CMN_ACCESSMASK: permission bits only
+  uint64_t ino; // ATTR_CMN_FILEID
+  attrreference_t fullpath; // ATTR_CMN_FULLPATH
+  uint32_t nlink; // ATTR_FILE_LINKCOUNT
+  off_t size; // ATTR_FILE_DATALENGTH: the data fork, as st_size reports
+} __attribute__((packed));
+
+constexpr attrgroup_t kCanonicalStatCommonAttrs = ATTR_CMN_RETURNED_ATTRS |
+    ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_CHGTIME |
+    ATTR_CMN_ACCTIME | ATTR_CMN_OWNERID | ATTR_CMN_GRPID |
+    ATTR_CMN_ACCESSMASK | ATTR_CMN_FILEID | ATTR_CMN_FULLPATH;
+constexpr attrgroup_t kCanonicalStatFileAttrs =
+    ATTR_FILE_LINKCOUNT | ATTR_FILE_DATALENGTH;
+
+mode_t modeTypeBits(fsobj_type_t objtype) {
+  switch (objtype) {
+    case VREG:
+      return S_IFREG;
+    case VDIR:
+      return S_IFDIR;
+    case VLNK:
+      return S_IFLNK;
+    case VBLK:
+      return S_IFBLK;
+    case VCHR:
+      return S_IFCHR;
+    case VFIFO:
+      return S_IFIFO;
+    case VSOCK:
+      return S_IFSOCK;
+    default:
+      return 0;
+  }
+}
+
+/** Stat a path on a case-insensitive volume and require that every component
+ * matches the on-disk name. The kernel builds ATTR_CMN_FULLPATH from on-disk
+ * names regardless of the case used for the lookup, so comparing it with the
+ * requested path checks all components in the same call that returns the
+ * stat data. This replaces fstatat plus two ATTR_CMN_NAME lookups. */
+Result<FileInformation, std::error_code> statCanonical(const char* path) {
+  struct attrlist attrlist{};
+  attrlist.bitmapcount = ATTR_BIT_MAP_COUNT;
+  attrlist.commonattr = kCanonicalStatCommonAttrs;
+  attrlist.fileattr = kCanonicalStatFileAttrs;
+
+  union {
+    CanonicalStatAttrs attrs;
+    char bytes[sizeof(CanonicalStatAttrs) + PATH_MAX + 8];
+  } buf;
+  if (getattrlist(
+          path,
+          &attrlist,
+          &buf,
+          sizeof(buf),
+          FSOPT_NOFOLLOW | FSOPT_NOFOLLOW_ANY | FSOPT_PACK_INVAL_ATTRS)) {
+    return lookupError(errno);
+  }
+  const auto& a = buf.attrs;
+  const bool isDir = a.objtype == VDIR;
+
+  constexpr attrgroup_t kRequiredCommon =
+      kCanonicalStatCommonAttrs & ~ATTR_CMN_RETURNED_ATTRS;
+  const char* fullpath = nullptr;
+  if ((a.returned.commonattr & kRequiredCommon) == kRequiredCommon) {
+    fullpath = reinterpret_cast<const char*>(&a.fullpath) +
+        a.fullpath.attr_dataoffset;
+    if (fullpath + a.fullpath.attr_length > buf.bytes + sizeof(buf)) {
+      fullpath = nullptr;
+    }
+  }
+  if (!fullpath ||
+      (!isDir &&
+       (a.returned.fileattr & kCanonicalStatFileAttrs) !=
+           kCanonicalStatFileAttrs)) {
+    // The filesystem didn't provide everything; take the long way.
+    return statCheckingNames(path, true);
+  }
+
+  if (strcmp(fullpath, path) != 0) {
+    if (!isDir && a.nlink > 1) {
+      // A hard-linked file may report the path of another link.
+      return statCheckingNames(path, true);
+    }
+    return std::error_code(ENOENT, name_mismatch_category());
+  }
+
+  if (isDir) {
+    // The directory link-count attribute is not st_nlink (APFS reports 1;
+    // stat reports 2 + entries), so take stat data from stat.
+    return statCheckingNames(path, false);
+  }
+
+  FileInformation info;
+  info.mode = (a.mode & ~S_IFMT) | modeTypeBits(a.objtype);
+  info.size = static_cast<uint64_t>(a.size);
+  info.uid = a.uid;
+  info.gid = a.gid;
+  info.ino = a.ino;
+  info.dev = a.dev;
+  info.nlink = a.nlink;
+  info.atime = a.atime;
+  info.mtime = a.mtime;
+  info.ctime = a.ctime;
+  return info;
+}
+
+} // namespace
+#endif
+
+Result<FileInformation, std::error_code> tryGetFileInformation(
+    const char* path,
+    CaseSensitivity caseSensitive) {
+#if WATCHMAN_STAT_NOFOLLOW_ANY
+  // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
+  if (caseSensitive == CaseSensitivity::Unknown) {
+    caseSensitive = getCaseSensitivityForPath(path);
+  }
+  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
+    return statCanonical(path);
+  }
+  return statCheckingNames(path, false);
 #else
   try {
     return getFileInformation(path, caseSensitive);

@@ -133,4 +133,70 @@ TEST_F(GetFileInformationTest, nonCanonicalParentCaseIsRejected) {
   EXPECT_EQ(&name_mismatch_category(), &err.category());
 }
 
+TEST_F(GetFileInformationTest, nonCanonicalAncestorCaseIsRejected) {
+  if (cs_ != CaseSensitivity::CaseInSensitive) {
+    GTEST_SKIP() << "filesystem is case-sensitive";
+  }
+  mkdirOrThrow(root_ + "/Dir/Sub");
+  writeFile(root_ + "/Dir/Sub/Leaf");
+  auto err = statError(root_ + "/dir/Sub/Leaf");
+  EXPECT_EQ(std::errc::no_such_file_or_directory, err);
+  EXPECT_EQ(&name_mismatch_category(), &err.category());
+}
+
+TEST_F(GetFileInformationTest, hardLinkedFileFromEitherName) {
+  mkdirOrThrow(root_ + "/Other");
+  if (link((root_ + "/Dir/File.txt").c_str(), (root_ + "/Other/Link").c_str())) {
+    throw std::system_error(errno, std::generic_category(), "link");
+  }
+  for (auto name : {"/Dir/File.txt", "/Other/Link", "/Dir/File.txt"}) {
+    EXPECT_FALSE(statError(root_ + name)) << name;
+  }
+}
+
+namespace {
+void expectSameAsLstat(const std::string& path, CaseSensitivity cs) {
+  struct stat st;
+  ASSERT_EQ(0, lstat(path.c_str(), &st)) << path;
+  FileInformation want(st);
+  auto got = getFileInformation(path.c_str(), cs);
+  EXPECT_EQ(want.mode, got.mode) << path;
+  EXPECT_EQ(want.size, got.size) << path;
+  EXPECT_EQ(want.uid, got.uid) << path;
+  EXPECT_EQ(want.gid, got.gid) << path;
+  EXPECT_EQ(want.ino, got.ino) << path;
+  EXPECT_EQ(want.dev, got.dev) << path;
+  EXPECT_EQ(want.nlink, got.nlink) << path;
+  EXPECT_EQ(want.atime.tv_sec, got.atime.tv_sec) << path;
+  EXPECT_EQ(want.atime.tv_nsec, got.atime.tv_nsec) << path;
+  EXPECT_EQ(want.mtime.tv_sec, got.mtime.tv_sec) << path;
+  EXPECT_EQ(want.mtime.tv_nsec, got.mtime.tv_nsec) << path;
+  EXPECT_EQ(want.ctime.tv_sec, got.ctime.tv_sec) << path;
+  EXPECT_EQ(want.ctime.tv_nsec, got.ctime.tv_nsec) << path;
+}
+} // namespace
+
+TEST_F(GetFileInformationTest, matchesLstat) {
+  mkdirOrThrow(root_ + "/Dir/Sub");
+  writeFile(root_ + "/Dir/Sub/Leaf");
+  writeFile(root_ + "/Dir/Exec");
+  chmod((root_ + "/Dir/Exec").c_str(), 04755);
+  mkdirOrThrow(root_ + "/Sticky");
+  chmod((root_ + "/Sticky").c_str(), 01777);
+  link((root_ + "/Dir/File.txt").c_str(), (root_ + "/Dir/Hard").c_str());
+  mkfifo((root_ + "/Dir/Fifo").c_str(), 0600);
+  for (auto name :
+       {"/Dir/File.txt",
+        "/Dir/Hard",
+        "/Dir/FileLink",
+        "/Dir/Exec",
+        "/Dir/Fifo",
+        "/Dir",
+        "/Dir/Sub",
+        "/Sticky",
+        "/DirLink"}) {
+    expectSameAsLstat(root_ + name, cs_);
+  }
+}
+
 #endif
