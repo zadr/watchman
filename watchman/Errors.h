@@ -97,6 +97,20 @@ class inotify_category : public std::error_category {
 // Obtain a ref to the above error category
 const std::error_category& inotify_category();
 
+// Errno values meaning "a path exists, but not with this exact name". Raised
+// when a case-insensitive lookup or path canonicalization found an entry
+// whose name differs from the one requested. Compares equal to the generic
+// errno, so ENOENT here still matches no_such_file_or_directory; callers that
+// care can check the category to tell it apart from a real absence.
+class name_mismatch_category : public std::error_category {
+ public:
+  const char* name() const noexcept override;
+  std::string message(int err) const override;
+  std::error_condition default_error_condition(int err) const noexcept override;
+};
+
+const std::error_category& name_mismatch_category();
+
 template <typename T>
 class WatchmanError : public std::runtime_error {
   struct NoPrefix {};

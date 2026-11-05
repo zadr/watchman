@@ -57,12 +57,30 @@ const std::error_category& inotify_category() {
   return cat;
 }
 
+const char* name_mismatch_category::name() const noexcept {
+  return "name_mismatch";
+}
+
+std::string name_mismatch_category::message(int err) const {
+  return std::generic_category().message(err);
+}
+
+std::error_condition name_mismatch_category::default_error_condition(
+    int err) const noexcept {
+  return std::error_condition(err, std::generic_category());
+}
+
+const std::error_category& name_mismatch_category() {
+  static class name_mismatch_category cat;
+  return cat;
+}
+
 bool error_category::equivalent(const std::error_code& code, int condition)
     const noexcept {
-  if (code.category() == inotify_category()) {
-    // Treat inotify the same as the generic category for the purposes of
-    // equivalence; it is the same namespace, we just provide different
-    // renditions of the error messages.
+  if (code.category() == inotify_category() ||
+      code.category() == name_mismatch_category()) {
+    // Both share the generic errno namespace; they only differ in message
+    // text or in what the caller can infer from the category.
     return equivalent(
         std::error_code(code.value(), std::generic_category()), condition);
   }

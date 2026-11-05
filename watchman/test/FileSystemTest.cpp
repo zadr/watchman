@@ -10,6 +10,7 @@
 #include <folly/portability/GTest.h>
 #include <fstream>
 #include <system_error>
+#include "watchman/Errors.h"
 #include "watchman/fs/FSDetect.h"
 
 #ifndef _WIN32
@@ -80,7 +81,11 @@ TEST_F(GetFileInformationTest, leafSymlinkIsNotFollowed) {
 }
 
 TEST_F(GetFileInformationTest, missing) {
-  EXPECT_EQ(std::errc::no_such_file_or_directory, statError(root_ + "/nope"));
+  auto err = statError(root_ + "/nope");
+  EXPECT_EQ(std::errc::no_such_file_or_directory, err);
+  EXPECT_EQ(error_code::no_such_file_or_directory, err);
+  // The IO thread crawls the parent only for name mismatches.
+  EXPECT_NE(&name_mismatch_category(), &err.category());
 }
 
 TEST_F(GetFileInformationTest, symlinkedParentIsRejected) {
@@ -107,18 +112,20 @@ TEST_F(GetFileInformationTest, nonCanonicalLeafCaseIsRejected) {
   if (cs_ != CaseSensitivity::CaseInSensitive) {
     GTEST_SKIP() << "filesystem is case-sensitive";
   }
-  EXPECT_EQ(
-      std::errc::no_such_file_or_directory,
-      statError(root_ + "/Dir/file.txt"));
+  auto err = statError(root_ + "/Dir/file.txt");
+  EXPECT_EQ(std::errc::no_such_file_or_directory, err);
+  EXPECT_EQ(error_code::no_such_file_or_directory, err);
+  EXPECT_EQ(&name_mismatch_category(), &err.category());
 }
 
 TEST_F(GetFileInformationTest, nonCanonicalParentCaseIsRejected) {
   if (cs_ != CaseSensitivity::CaseInSensitive) {
     GTEST_SKIP() << "filesystem is case-sensitive";
   }
-  EXPECT_EQ(
-      std::errc::no_such_file_or_directory,
-      statError(root_ + "/dir/File.txt"));
+  auto err = statError(root_ + "/dir/File.txt");
+  EXPECT_EQ(std::errc::no_such_file_or_directory, err);
+  EXPECT_EQ(error_code::no_such_file_or_directory, err);
+  EXPECT_EQ(&name_mismatch_category(), &err.category());
 }
 
 #endif

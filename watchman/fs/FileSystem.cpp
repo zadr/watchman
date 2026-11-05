@@ -9,6 +9,7 @@
 #include <fmt/core.h>
 #include <folly/String.h>
 #include <system_error>
+#include "watchman/Errors.h"
 #include "watchman/fs/FSDetect.h"
 #include "watchman/portability/WinError.h"
 #include "watchman/watchman_stream.h"
@@ -100,7 +101,7 @@ void checkCanonicalBaseName(const char* path) {
   if (name != base) {
     throw std::system_error(
         ENOENT,
-        std::generic_category(),
+        name_mismatch_category(),
         fmt::format(
             "checkCanonicalBaseName({}): ({}) doesn't match canonical base ({})",
             path,
@@ -122,7 +123,7 @@ void checkCanonicalBaseName(const char* path) {
       // We didn't find an entry that exactly matched -> fail
       throw std::system_error(
           ENOENT,
-          std::generic_category(),
+          name_mismatch_category(),
           fmt::format(
               "checkCanonicalBaseName({}): no match found in parent dir",
               path));
@@ -252,7 +253,7 @@ FileDescriptor openFileHandle(
 
   throw std::system_error(
       ENOENT,
-      std::generic_category(),
+      name_mismatch_category(),
       fmt::format(
           "open({}): opened path doesn't match canonical path {}",
           path,

@@ -948,12 +948,14 @@ void InMemoryView::statPath(
       view.markFileChanged(file, getClock(pending.now));
     }
 
-    if (!viaPwalk &&
+    if (!viaPwalk && errcode.category() == name_mismatch_category() &&
         (root.case_sensitive == CaseSensitivity::CaseInSensitive &&
          dir_name != root.root_path && parentDir->last_check_existed)) {
       /* If we rejected the name because it wasn't canonical,
        * we need to ensure that we look in the parent dir to discover
-       * the new item(s)
+       * the new item(s). A plain ENOENT means no entry of any case
+       * exists, so there is nothing to discover; skipping it avoids a
+       * readdir of the parent for every deleted or renamed-away file.
        *
        * Unless viaPwalk, in which case the siblings (items in parent dir)
        * will be visited by crawlerParallel. */
