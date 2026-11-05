@@ -8,6 +8,7 @@
 #include "watchman/root/watchlist.h"
 #include <fmt/core.h>
 #include <folly/Synchronized.h>
+#include <optional>
 #include <vector>
 #include "watchman/QueryableView.h"
 #include "watchman/TriggerCommand.h"
@@ -40,28 +41,35 @@ bool findEnclosingRoot(
     const w_string& fileName,
     w_string_piece& prefix,
     w_string_piece& relativePath) {
-  std::shared_ptr<Root> root;
   auto name = fileName.piece();
+  // Prefer the outermost root so that a nested root stops being handed out
+  // and can be reaped once it idles.
+  std::optional<size_t> outermost;
   {
     auto map = watched_roots.rlock();
     for (const auto& it : *map) {
-      auto root_name = it.first;
-      if (name.startsWith(root_name.piece()) &&
-          (name.size() == root_name.size() /* exact match */ ||
-           is_slash(name[root_name.size()] /* dir container matches */))) {
-        root = it.second;
-        prefix = root_name.piece();
-        if (name.size() == root_name.size()) {
-          relativePath = w_string_piece();
-        } else {
-          relativePath = name;
-          relativePath.advance(root_name.size() + 1);
-        }
-        return true;
+      auto root_size = it.first.size();
+      if (name.startsWith(it.first.piece()) &&
+          (name.size() == root_size /* exact match */ ||
+           is_slash(name[root_size] /* dir container matches */)) &&
+          (!outermost || root_size < *outermost)) {
+        outermost = root_size;
       }
     }
   }
-  return false;
+  if (!outermost) {
+    return false;
+  }
+  // Slice fileName rather than the map key, which may be freed once the lock
+  // is released.
+  prefix = w_string_piece(name.data(), *outermost);
+  if (name.size() == *outermost) {
+    relativePath = w_string_piece();
+  } else {
+    relativePath = name;
+    relativePath.advance(*outermost + 1);
+  }
+  return true;
 }
 
 json_ref w_root_stop_watch_all() {

@@ -26,9 +26,8 @@ extern folly::Synchronized<std::unordered_map<w_string, std::shared_ptr<Root>>>
 // If a watch is a prefix match for filename then we consider it to
 // be an enclosing watch and we'll return the root path and the relative
 // path to filename.
-// Returns NULL if there were no matches.
-// If multiple watches have the same prefix, it is undefined which one will
-// match.
+// Returns false if there were no matches.
+// If multiple watches enclose filename, the outermost one is returned.
 bool findEnclosingRoot(
     const w_string& fileName,
     w_string_piece& prefix,

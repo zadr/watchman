@@ -132,3 +132,32 @@ class TestWatchProject(WatchmanTestCase.WatchmanTestCase):
         res = self.watchmanCommand("watch-project", abc)
         self.assertEqual(d, norm_absolute_path(res["watch"]))
         self.assertEqual("a/b/c", norm_relative_path(res["relative_path"]))
+
+    def test_reUseOutermostWatch(self) -> None:
+        # Which enclosing root used to win depended on hash order, so use
+        # several trees to make a lucky pass unlikely.
+        for _ in range(4):
+            d = self.mkdtemp()
+            inner_dirs = [
+                os.path.join(d, "a"),
+                os.path.join(d, "a", "b"),
+                os.path.join(d, "a", "b", "c"),
+            ]
+            target = os.path.join(inner_dirs[-1], "d")
+            os.makedirs(target)
+
+            # Watch the innermost first so that insertion order can't pick
+            # the outer root by accident.
+            for inner in reversed(inner_dirs):
+                make_empty_watchmanconfig(inner)
+                self.watchmanCommand("watch", inner)
+            self.watchmanCommand("watch", d)
+
+            for _ in range(3):
+                res = self.watchmanCommand("watch-project", target)
+                self.assertEqual(d, norm_absolute_path(res["watch"]))
+                self.assertEqual("a/b/c/d", norm_relative_path(res["relative_path"]))
+
+                res = self.watchmanCommand("watch-project", inner_dirs[0])
+                self.assertEqual(d, norm_absolute_path(res["watch"]))
+                self.assertEqual("a", norm_relative_path(res["relative_path"]))
