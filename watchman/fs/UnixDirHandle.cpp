@@ -10,9 +10,11 @@
 #include <fmt/core.h>
 #include <folly/String.h>
 #include <system_error>
+#include "watchman/Errors.h"
 #include "watchman/Logging.h"
 #include "watchman/WatchmanConfig.h"
 #include "watchman/fs/FileDescriptor.h"
+#include "watchman/fs/FSDetect.h"
 #include "watchman/fs/FileSystem.h"
 
 #ifndef _WIN32
@@ -69,15 +71,23 @@ class UnixDirHandle : public DirHandle {
   int retcount_{0};
   char buf_[64 * (sizeof(bulk_attr_item) + NAME_MAX * 3 + 1)];
   char* cursor_{nullptr};
+  std::optional<uint32_t> entryCount_;
+
+  void checkOpenedDir(const char* path, bool checkCase);
 #endif
   DIR* d_{nullptr};
   struct DirEntry ent_;
 
  public:
-  explicit UnixDirHandle(const char* path, bool strict);
+  UnixDirHandle(const char* path, bool strict, CaseSensitivity caseSensitive);
   ~UnixDirHandle() override;
   const DirEntry* readDir() override;
   int getFd() const override;
+#ifdef HAVE_GETATTRLISTBULK
+  std::optional<uint32_t> entryCount() const override {
+    return entryCount_;
+  }
+#endif
 };
 #endif
 
@@ -129,8 +139,9 @@ static bool use_bulkstat_by_default() {
 #endif
 
 #ifndef _WIN32
-std::unique_ptr<DirHandle> openDir(const char* path, bool strict) {
-  return std::make_unique<UnixDirHandle>(path, strict);
+std::unique_ptr<DirHandle>
+openDir(const char* path, bool strict, CaseSensitivity caseSensitive) {
+  return std::make_unique<UnixDirHandle>(path, strict, caseSensitive);
 }
 
 #ifdef HAVE_GETATTRLISTBULK
@@ -173,7 +184,10 @@ static const std::unordered_map<uint32_t, const char*> commonLabels = {
 };
 #endif
 
-UnixDirHandle::UnixDirHandle(const char* path, bool strict)
+UnixDirHandle::UnixDirHandle(
+    const char* path,
+    bool strict,
+    [[maybe_unused]] CaseSensitivity caseSensitive)
 #ifdef HAVE_GETATTRLISTBULK
     : dirName_(path)
 #endif
@@ -183,14 +197,20 @@ UnixDirHandle::UnixDirHandle(const char* path, bool strict)
   if (cfg_get_bool("_use_bulkstat", use_bulkstat_by_default())) {
     auto opts = strict ? OpenFileHandleOptions::strictOpenDir()
                        : OpenFileHandleOptions::openDir();
-
+    // O_DIRECTORY rejects non-directories with ENOTDIR. The strict name
+    // checks are done by checkOpenedDir, on the opened fd.
+    opts.strictNameChecks = false;
     fd_ = openFileHandle(path, opts);
 
-    auto info = fd_.getInfo();
-
-    if (!info.isDir()) {
-      throw std::system_error(ENOTDIR, std::generic_category(), path);
+    bool checkCase = false;
+    if (strict) {
+      checkOpenedPath(fd_, path);
+      if (caseSensitive == CaseSensitivity::Unknown) {
+        caseSensitive = getCaseSensitivityForPath(path);
+      }
+      checkCase = caseSensitive == CaseSensitivity::CaseInSensitive;
     }
+    checkOpenedDir(path, checkCase);
 
     attrlist_ = attrlist{};
     attrlist_.bitmapcount = ATTR_BIT_MAP_COUNT;
@@ -217,6 +237,45 @@ UnixDirHandle::UnixDirHandle(const char* path, bool strict)
         std::string(strict ? "opendir_nofollow: " : "opendir: ") + path);
   }
 }
+
+#ifdef HAVE_GETATTRLISTBULK
+// One fgetattrlist on the opened fd for both the entry count and, on
+// case-insensitive volumes, the check that the final component's case
+// matches the name on disk. It asks the same vnode as checkCanonicalBaseName
+// does via the path, without a second path lookup.
+void UnixDirHandle::checkOpenedDir(const char* path, bool checkCase) {
+  struct attrlist attrs {};
+  attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
+  attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME;
+  attrs.dirattr = ATTR_DIR_ENTRYCOUNT;
+  struct {
+    uint32_t len;
+    attribute_set_t returned;
+    attrreference_t name;
+    uint32_t entryCount;
+    char nameBuf[NAME_MAX * 3 + 1];
+  } __attribute__((packed)) out;
+  if (fgetattrlist(
+          fd_.fd(), &attrs, &out, sizeof(out), FSOPT_PACK_INVAL_ATTRS) == -1) {
+    throw std::system_error(errno, std::generic_category(), "fgetattrlist");
+  }
+  if (out.returned.dirattr & ATTR_DIR_ENTRYCOUNT) {
+    entryCount_ = out.entryCount;
+  }
+  if (checkCase) {
+    if (!(out.returned.commonattr & ATTR_CMN_NAME) ||
+        w_string_piece(((char*)&out.name) + out.name.attr_dataoffset) !=
+            w_string_piece(path).baseName()) {
+      throw std::system_error(
+          ENOENT,
+          name_mismatch_category(),
+          fmt::format(
+              "checkCanonicalBaseName({}): doesn't match the canonical name on disk",
+              path));
+    }
+  }
+}
+#endif
 
 const DirEntry* UnixDirHandle::readDir() {
 #ifdef HAVE_GETATTRLISTBULK

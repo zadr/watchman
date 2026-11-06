@@ -77,6 +77,10 @@ FileDescriptor openFileHandle(
     const char* path,
     const OpenFileHandleOptions& opts);
 
+/** The first of openFileHandle's strict name checks: throws ENOENT in
+ * name_mismatch_category if the kernel's path for file differs from path. */
+void checkOpenedPath(const FileDescriptor& file, const char* path);
+
 /** equivalent to lstat(2), but performs strict name checking */
 FileInformation getFileInformation(
     const char* path,

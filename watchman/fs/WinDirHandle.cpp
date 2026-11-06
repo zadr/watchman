@@ -182,7 +182,8 @@ class WinDirHandle : public DirHandle {
 };
 } // namespace
 
-std::unique_ptr<DirHandle> openDir(const char* path, bool strict) {
+std::unique_ptr<DirHandle>
+openDir(const char* path, bool strict, CaseSensitivity) {
   return std::make_unique<WinDirHandle>(path, strict);
 }
 

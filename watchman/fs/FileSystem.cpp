@@ -189,7 +189,7 @@ FileDescriptor openFileHandle(
                   : opts.readContents ? O_RDONLY
                                       : 0)) |
       (opts.create ? O_CREAT : 0) | (opts.exclusiveCreate ? O_EXCL : 0) |
-      (opts.truncate ? O_TRUNC : 0);
+      (opts.truncate ? O_TRUNC : 0) | (opts.directory ? O_DIRECTORY : 0);
 
   auto fd = open(path, flags);
   if (fd == -1) {
@@ -264,30 +264,33 @@ FileDescriptor openFileHandle(
     return file;
   }
 
-  auto opened = file.getOpenedPath();
-  if (w_string_piece(opened).pathIsEqual(path)) {
+  checkOpenedPath(file, path);
 #if !CAN_OPEN_SYMLINKS
-    CaseSensitivity caseSensitive = opts.caseSensitive;
-    if (caseSensitive == CaseSensitivity::Unknown) {
-      caseSensitive = getCaseSensitivityForPath(path);
-    }
-    if (caseSensitive == CaseSensitivity::CaseInSensitive) {
-      // We need to perform one extra check for case-insensitive
-      // paths to make sure that we didn't accidentally open
-      // the wrong case name.
-      checkCanonicalBaseName(path);
-    }
-#endif
-    return file;
+  CaseSensitivity caseSensitive = opts.caseSensitive;
+  if (caseSensitive == CaseSensitivity::Unknown) {
+    caseSensitive = getCaseSensitivityForPath(path);
   }
+  if (caseSensitive == CaseSensitivity::CaseInSensitive) {
+    // We need to perform one extra check for case-insensitive
+    // paths to make sure that we didn't accidentally open
+    // the wrong case name.
+    checkCanonicalBaseName(path);
+  }
+#endif
+  return file;
+}
 
-  throw std::system_error(
-      ENOENT,
-      name_mismatch_category(),
-      fmt::format(
-          "open({}): opened path doesn't match canonical path {}",
-          path,
-          opened));
+void checkOpenedPath(const FileDescriptor& file, const char* path) {
+  auto opened = file.getOpenedPath();
+  if (!w_string_piece(opened).pathIsEqual(path)) {
+    throw std::system_error(
+        ENOENT,
+        name_mismatch_category(),
+        fmt::format(
+            "open({}): opened path doesn't match canonical path {}",
+            path,
+            opened));
+  }
 }
 
 #if WATCHMAN_STAT_NOFOLLOW_ANY

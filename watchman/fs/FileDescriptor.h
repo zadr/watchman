@@ -40,6 +40,7 @@ struct OpenFileHandleOptions {
   unsigned create : 1; // O_CREAT
   unsigned exclusiveCreate : 1; // O_EXCL
   unsigned truncate : 1; // O_TRUNC
+  unsigned directory : 1; // O_DIRECTORY
   unsigned strictNameChecks : 1;
   CaseSensitivity caseSensitive;
 
@@ -52,6 +53,7 @@ struct OpenFileHandleOptions {
         create(0),
         exclusiveCreate(0),
         truncate(0),
+        directory(0),
         strictNameChecks(1),
         caseSensitive(CaseSensitivity::Unknown) {}
 
@@ -64,6 +66,7 @@ struct OpenFileHandleOptions {
   static inline OpenFileHandleOptions openDir() {
     OpenFileHandleOptions opts;
     opts.readContents = 1;
+    opts.directory = 1;
     opts.strictNameChecks = false;
     opts.followSymlinks = 1;
     return opts;
@@ -72,6 +75,7 @@ struct OpenFileHandleOptions {
   static inline OpenFileHandleOptions strictOpenDir() {
     OpenFileHandleOptions opts;
     opts.readContents = 1;
+    opts.directory = 1;
     opts.strictNameChecks = true;
     opts.followSymlinks = 0;
     return opts;

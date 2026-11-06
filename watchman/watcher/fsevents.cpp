@@ -881,9 +881,9 @@ void FSEventsWatcher::stopThreads() {
 }
 
 std::unique_ptr<DirHandle> FSEventsWatcher::startWatchDir(
-    const std::shared_ptr<Root>&,
+    const std::shared_ptr<Root>& root,
     const char* path) {
-  return openDir(path);
+  return openDir(path, true, root->case_sensitive);
 }
 
 json_ref FSEventsWatcher::getDebugInfo() {

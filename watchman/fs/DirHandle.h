@@ -8,6 +8,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include "watchman/fs/FileDescriptor.h"
 #include "watchman/fs/FileInformation.h"
 
 namespace watchman {
@@ -25,6 +27,10 @@ class DirHandle {
 #ifndef _WIN32
   virtual int getFd() const = 0;
 #endif
+  /** Number of entries when the dir was opened, if known without a syscall. */
+  virtual std::optional<uint32_t> entryCount() const {
+    return std::nullopt;
+  }
 };
 
 /**
@@ -32,6 +38,9 @@ class DirHandle {
  * Does not follow symlinks if strict == true.
  * Throws std::system_error if the dir could not be opened.
  */
-std::unique_ptr<DirHandle> openDir(const char* path, bool strict = true);
+std::unique_ptr<DirHandle> openDir(
+    const char* path,
+    bool strict = true,
+    CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
 
 } // namespace watchman

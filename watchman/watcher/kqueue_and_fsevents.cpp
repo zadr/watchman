@@ -199,7 +199,7 @@ std::unique_ptr<DirHandle> KQueueAndFSEventsWatcher::startWatchDir(
     const char* path) {
   // Open the directory first to validate that the path is the canonical one.
   // This will throw an exception if it's not.
-  auto ret = openDir(path);
+  auto ret = openDir(path, true, root->case_sensitive);
 
   if (root->root_path == path) {
     logf(DBG, "Watching root directory with kqueue\n");
