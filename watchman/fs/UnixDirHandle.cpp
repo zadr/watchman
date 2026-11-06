@@ -61,7 +61,10 @@ typedef struct {
   // Entries carry only the attribute group for their type.
   union {
     off_t file_size; // ATTR_FILE_TOTALSIZE
-    uint32_t entry_count; // ATTR_DIR_ENTRYCOUNT
+    struct {
+      uint32_t entry_count; // ATTR_DIR_ENTRYCOUNT
+      off_t dir_size; // ATTR_DIR_DATALENGTH: va_data_size, as st_size
+    } __attribute__((packed));
   } __attribute__((packed));
 
 } __attribute__((packed)) bulk_attr_item;
@@ -242,7 +245,8 @@ UnixDirHandle::UnixDirHandle(
         ATTR_CMN_CHGTIME | ATTR_CMN_ACCTIME | ATTR_CMN_OWNERID |
         ATTR_CMN_GRPID | ATTR_CMN_ACCESSMASK | ATTR_CMN_FILEID;
 
-    attrlist_.dirattr = ATTR_DIR_LINKCOUNT | ATTR_DIR_ENTRYCOUNT;
+    attrlist_.dirattr =
+        ATTR_DIR_LINKCOUNT | ATTR_DIR_ENTRYCOUNT | ATTR_DIR_DATALENGTH;
     attrlist_.fileattr = ATTR_FILE_TOTALSIZE | ATTR_FILE_LINKCOUNT;
     return;
   }
@@ -442,9 +446,13 @@ const DirEntry* UnixDirHandle::readDir() {
       case VDIR:
         ent_.stat.mode |= S_IFDIR;
         if (countedDev_ && item->dev == *countedDev_ &&
-            (item->returned.dirattr & ATTR_DIR_ENTRYCOUNT)) {
+            (item->returned.dirattr &
+             (ATTR_DIR_ENTRYCOUNT | ATTR_DIR_DATALENGTH)) ==
+                (ATTR_DIR_ENTRYCOUNT | ATTR_DIR_DATALENGTH)) {
           // As stat computes it, saturating like its 16-bit st_nlink.
-          ent_.stat.nlink = std::min<uint32_t>(item->entry_count + 2, UINT16_MAX);
+          ent_.stat.nlink =
+              std::min<uint32_t>(item->entry_count + 2, UINT16_MAX);
+          ent_.stat.size = item->dir_size;
         } else {
           ent_.stat.nlink = item->link;
         }

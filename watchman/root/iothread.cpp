@@ -918,7 +918,8 @@ void InMemoryView::statPath(
     errcode = make_error_code(error_code::no_such_file_or_directory);
   } else {
     auto result =
-        fileSystem_.tryGetFileInformation(path.c_str(), root.case_sensitive);
+        fileSystem_.tryGetFileInformation(
+            path.c_str(), root.case_sensitive, root.countedDirsDev());
     if (result.hasValue()) {
       st = std::move(result).value();
       log(DBG,

@@ -6,6 +6,8 @@
  */
 
 #pragma once
+
+#include <optional>
 #include "watchman/Result.h"
 #include "watchman/fs/DirHandle.h"
 #include "watchman/fs/FileDescriptor.h"
@@ -53,7 +55,8 @@ class FileSystem {
    */
   virtual Result<FileInformation, std::error_code> tryGetFileInformation(
       const char* path,
-      CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
+      CaseSensitivity caseSensitive = CaseSensitivity::Unknown,
+      std::optional<dev_t> countedDev = std::nullopt);
 
   /**
    * Watchman-specific API for creating an empty file on the filesystem.
@@ -86,10 +89,13 @@ FileInformation getFileInformation(
     const char* path,
     CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
 
-/** getFileInformation without exceptions; see FileSystem. */
+/** getFileInformation without exceptions; see FileSystem.
+ * On countedDev (see openDir), a directory's nlink and size come from the
+ * same lookup as its other attributes. */
 Result<FileInformation, std::error_code> tryGetFileInformation(
     const char* path,
-    CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
+    CaseSensitivity caseSensitive = CaseSensitivity::Unknown,
+    std::optional<dev_t> countedDev = std::nullopt);
 
 /**
  * Test to see if both the files are on the same mount point.

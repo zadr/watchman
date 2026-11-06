@@ -65,6 +65,17 @@ class GetFileInformationTest : public ::testing::Test {
     return returned;
   }
 
+  // The device openDir and tryGetFileInformation may trust entry counts on,
+  // chosen as Root::countedDirsDev does.
+  std::optional<dev_t> countedDev() const {
+    auto fsType = w_fstype(root_.c_str());
+    struct stat st;
+    if ((fsType == "apfs" || fsType == "hfs") && lstat(root_.c_str(), &st) == 0) {
+      return st.st_dev;
+    }
+    return std::nullopt;
+  }
+
   folly::test::TemporaryDirectory tmp_{"wm-fs"};
   std::string root_;
   CaseSensitivity cs_;
@@ -158,11 +169,16 @@ TEST_F(GetFileInformationTest, hardLinkedFileFromEitherName) {
 }
 
 namespace {
-void expectSameAsLstat(const std::string& path, CaseSensitivity cs) {
+void expectSameAsLstat(
+    const std::string& path,
+    CaseSensitivity cs,
+    std::optional<dev_t> countedDev = std::nullopt) {
   struct stat st;
   ASSERT_EQ(0, lstat(path.c_str(), &st)) << path;
   FileInformation want(st);
-  auto got = getFileInformation(path.c_str(), cs);
+  auto result = tryGetFileInformation(path.c_str(), cs, countedDev);
+  ASSERT_FALSE(result.hasError()) << path;
+  auto got = result.value();
   EXPECT_EQ(want.mode, got.mode) << path;
   EXPECT_EQ(want.size, got.size) << path;
   EXPECT_EQ(want.uid, got.uid) << path;
@@ -199,6 +215,7 @@ TEST_F(GetFileInformationTest, matchesLstat) {
         "/Sticky",
         "/DirLink"}) {
     expectSameAsLstat(root_ + name, cs_);
+    expectSameAsLstat(root_ + name, cs_, countedDev());
   }
 }
 
@@ -217,6 +234,7 @@ void expectListingMatchesLstat(
     ASSERT_EQ(0, lstat((path + "/" + ent->d_name).c_str(), &st));
     if (ent->stat.isDir() && countedDev) {
       EXPECT_EQ(st.st_nlink, ent->stat.nlink) << ent->d_name;
+      EXPECT_EQ(uint64_t(st.st_size), ent->stat.size) << ent->d_name;
     }
   }
   EXPECT_EQ(want, got) << path;
@@ -229,13 +247,8 @@ TEST_F(GetFileInformationTest, countedListing) {
   for (int i = 0; i < 300; ++i) {
     writeFile(root_ + "/Dir/Sub/f" + std::to_string(i));
   }
-  struct stat st;
-  ASSERT_EQ(0, lstat(root_.c_str(), &st));
-  auto fsType = w_fstype(root_.c_str());
-  std::optional<dev_t> counted;
-  if (fsType == "apfs" || fsType == "hfs") {
-    counted = st.st_dev;
-  }
+  auto counted = countedDev();
+  ASSERT_TRUE(counted || w_fstype(root_.c_str()) != "apfs");
   std::set<std::string> sub;
   for (int i = 0; i < 300; ++i) {
     sub.insert("f" + std::to_string(i));

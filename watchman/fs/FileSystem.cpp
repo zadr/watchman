@@ -6,6 +6,8 @@
  */
 
 #include "watchman/fs/FileSystem.h"
+
+#include <algorithm>
 #include <fmt/core.h>
 #include <folly/String.h>
 #include <system_error>
@@ -52,8 +54,9 @@ class RealFileSystem final : public FileSystem {
 
   Result<FileInformation, std::error_code> tryGetFileInformation(
       const char* path,
-      CaseSensitivity caseSensitive = CaseSensitivity::Unknown) override {
-    return watchman::tryGetFileInformation(path, caseSensitive);
+      CaseSensitivity caseSensitive = CaseSensitivity::Unknown,
+      std::optional<dev_t> countedDev = std::nullopt) override {
+    return watchman::tryGetFileInformation(path, caseSensitive, countedDev);
   }
 
   /**
@@ -80,7 +83,8 @@ FileSystem& realFileSystem = gRealFileSystem;
 
 Result<FileInformation, std::error_code> FileSystem::tryGetFileInformation(
     const char* path,
-    CaseSensitivity caseSensitive) {
+    CaseSensitivity caseSensitive,
+    std::optional<dev_t>) {
   try {
     return getFileInformation(path, caseSensitive);
   } catch (const std::system_error& e) {
@@ -327,7 +331,8 @@ Result<FileInformation, std::error_code> statCheckingNames(
 
 // Field order follows the ATTR_* bit order, which is the order getattrlist
 // packs them in. FSOPT_PACK_INVAL_ATTRS keeps the common fields at fixed
-// offsets; the file fields are only present for non-directories.
+// offsets. Only the group for the object's type follows; the file and the
+// requested directory attributes have the same shape.
 struct CanonicalStatAttrs {
   uint32_t len;
   attribute_set_t returned; // ATTR_CMN_RETURNED_ATTRS
@@ -341,8 +346,11 @@ struct CanonicalStatAttrs {
   uint32_t mode; // ATTR_CMN_ACCESSMASK: permission bits only
   uint64_t ino; // ATTR_CMN_FILEID
   attrreference_t fullpath; // ATTR_CMN_FULLPATH
-  uint32_t nlink; // ATTR_FILE_LINKCOUNT
-  off_t size; // ATTR_FILE_DATALENGTH: the data fork, as st_size reports
+  // ATTR_FILE_LINKCOUNT, or ATTR_DIR_ENTRYCOUNT for a directory
+  uint32_t nlink;
+  // ATTR_FILE_DATALENGTH: the data fork, as st_size reports; or
+  // ATTR_DIR_DATALENGTH, which is va_data_size, st_size's source
+  off_t size;
 } __attribute__((packed));
 
 constexpr attrgroup_t kCanonicalStatCommonAttrs = ATTR_CMN_RETURNED_ATTRS |
@@ -351,6 +359,8 @@ constexpr attrgroup_t kCanonicalStatCommonAttrs = ATTR_CMN_RETURNED_ATTRS |
     ATTR_CMN_ACCESSMASK | ATTR_CMN_FILEID | ATTR_CMN_FULLPATH;
 constexpr attrgroup_t kCanonicalStatFileAttrs =
     ATTR_FILE_LINKCOUNT | ATTR_FILE_DATALENGTH;
+constexpr attrgroup_t kCanonicalStatDirAttrs =
+    ATTR_DIR_ENTRYCOUNT | ATTR_DIR_DATALENGTH;
 
 mode_t modeTypeBits(fsobj_type_t objtype) {
   switch (objtype) {
@@ -378,11 +388,16 @@ mode_t modeTypeBits(fsobj_type_t objtype) {
  * names regardless of the case used for the lookup, so comparing it with the
  * requested path checks all components in the same call that returns the
  * stat data. This replaces fstatat plus two ATTR_CMN_NAME lookups. */
-Result<FileInformation, std::error_code> statCanonical(const char* path) {
+Result<FileInformation, std::error_code> statCanonical(
+    const char* path,
+    std::optional<dev_t> countedDev) {
   struct attrlist attrlist{};
   attrlist.bitmapcount = ATTR_BIT_MAP_COUNT;
   attrlist.commonattr = kCanonicalStatCommonAttrs;
   attrlist.fileattr = kCanonicalStatFileAttrs;
+  if (countedDev) {
+    attrlist.dirattr = kCanonicalStatDirAttrs;
+  }
 
   union {
     CanonicalStatAttrs attrs;
@@ -425,7 +440,10 @@ Result<FileInformation, std::error_code> statCanonical(const char* path) {
     return std::error_code(ENOENT, name_mismatch_category());
   }
 
-  if (isDir) {
+  if (isDir &&
+      !(countedDev && a.dev == *countedDev &&
+        (a.returned.dirattr & kCanonicalStatDirAttrs) ==
+            kCanonicalStatDirAttrs)) {
     // The directory link-count attribute is not st_nlink (APFS reports 1;
     // stat reports 2 + entries), so take stat data from stat.
     return statCheckingNames(path, false);
@@ -438,7 +456,8 @@ Result<FileInformation, std::error_code> statCanonical(const char* path) {
   info.gid = a.gid;
   info.ino = a.ino;
   info.dev = a.dev;
-  info.nlink = a.nlink;
+  // As stat computes it on countedDev, saturating like its 16-bit st_nlink.
+  info.nlink = isDir ? std::min<uint32_t>(a.nlink + 2, UINT16_MAX) : a.nlink;
   info.atime = a.atime;
   info.mtime = a.mtime;
   info.ctime = a.ctime;
@@ -450,14 +469,15 @@ Result<FileInformation, std::error_code> statCanonical(const char* path) {
 
 Result<FileInformation, std::error_code> tryGetFileInformation(
     const char* path,
-    CaseSensitivity caseSensitive) {
+    CaseSensitivity caseSensitive,
+    [[maybe_unused]] std::optional<dev_t> countedDev) {
 #if WATCHMAN_STAT_NOFOLLOW_ANY
   // One lookup instead of open(parent) + F_GETPATH + fstatat + close.
   if (caseSensitive == CaseSensitivity::Unknown) {
     caseSensitive = getCaseSensitivityForPath(path);
   }
   if (caseSensitive == CaseSensitivity::CaseInSensitive) {
-    return statCanonical(path);
+    return statCanonical(path, countedDev);
   }
   return statCheckingNames(path, false);
 #else
