@@ -13,17 +13,15 @@
 struct watchman_file;
 
 struct watchman_dir {
-  /* the name of this dir, relative to its parent
-   * for root (parent == nullptr), name is usually an absolute path */
-  w_string name;
   /* the parent dir */
   watchman_dir* parent;
 
   struct Deleter {
     void operator()(watchman_file*) const;
+    void operator()(watchman_dir*) const;
   };
   using FilePtr = std::unique_ptr<watchman_file, Deleter>;
-  using DirPtr = std::unique_ptr<watchman_dir>;
+  using DirPtr = std::unique_ptr<watchman_dir, Deleter>;
 
   /**
    * Hashes and compares entries by the name each one stores, and looks them
@@ -55,14 +53,26 @@ struct watchman_dir {
   /* files contained in this dir, by file->getName() */
   folly::F14ValueSet<FilePtr, NameHash, NameEqual> files;
 
-  /* child dirs contained in this dir, by dir->name */
+  /* child dirs contained in this dir, by dir->getName() */
   folly::F14ValueSet<DirPtr, NameHash, NameEqual> dirs;
+
+  /* the name is stored right after the struct, NUL terminated.
+   * It is relative to the parent; for root (parent == nullptr) it is
+   * usually an absolute path. */
+  uint32_t nameLength;
 
   // If we think this dir was deleted, we'll avoid recursing
   // to its children when processing deletes.
   bool last_check_existed{true};
 
-  watchman_dir(w_string name, watchman_dir* parent);
+  inline w_string_piece getName() const {
+    return w_string_piece(reinterpret_cast<const char*>(this + 1), nameLength);
+  }
+
+  watchman_dir(const watchman_dir&) = delete;
+  watchman_dir& operator=(const watchman_dir&) = delete;
+
+  static DirPtr make(w_string_piece name, watchman_dir* parent);
 
   watchman_dir* getChildDir(w_string_piece name) const;
 
@@ -89,4 +99,8 @@ struct watchman_dir {
    * the path to the child.
    */
   w_string getFullPathToChild(w_string_piece child) const;
+
+ private:
+  watchman_dir(uint32_t nameLength, watchman_dir* parent);
+  ~watchman_dir() = default;
 };

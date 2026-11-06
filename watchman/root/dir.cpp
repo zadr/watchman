@@ -6,21 +6,42 @@
  */
 
 #include "watchman/watchman_dir.h"
+#include <limits>
+#include "watchman/Logging.h"
 #include "watchman/watchman_file.h"
 
 void watchman_dir::Deleter::operator()(watchman_file* file) const {
   free_file_node(file);
 }
 
-watchman_dir::watchman_dir(w_string name, watchman_dir* parent)
-    : name(std::move(name)), parent(parent) {}
+void watchman_dir::Deleter::operator()(watchman_dir* dir) const {
+  dir->~watchman_dir();
+  ::operator delete(dir);
+}
+
+watchman_dir::watchman_dir(uint32_t nameLength, watchman_dir* parent)
+    : parent(parent), nameLength(nameLength) {}
+
+/* The name is embedded after the struct, saving a separate allocation. */
+watchman_dir::DirPtr watchman_dir::make(
+    w_string_piece name,
+    watchman_dir* parent) {
+  w_check(
+      name.size() <= std::numeric_limits<uint32_t>::max(), "dir name too long");
+  void* mem = ::operator new(sizeof(watchman_dir) + name.size() + 1);
+  auto data = static_cast<char*>(mem) + sizeof(watchman_dir);
+  memcpy(data, name.data(), name.size());
+  data[name.size()] = 0;
+  return DirPtr(
+      new (mem) watchman_dir(static_cast<uint32_t>(name.size()), parent));
+}
 
 size_t watchman_dir::NameHash::operator()(const FilePtr& file) const noexcept {
   return file->getName().hashValue();
 }
 
 size_t watchman_dir::NameHash::operator()(const DirPtr& dir) const noexcept {
-  return w_string_piece{dir->name}.hashValue();
+  return dir->getName().hashValue();
 }
 
 w_string_piece watchman_dir::NameEqual::nameOf(const FilePtr& file) {
@@ -28,7 +49,7 @@ w_string_piece watchman_dir::NameEqual::nameOf(const FilePtr& file) {
 }
 
 w_string_piece watchman_dir::NameEqual::nameOf(const DirPtr& dir) {
-  return dir->name;
+  return dir->getName();
 }
 
 w_string watchman_dir::getFullPath() const {
@@ -57,7 +78,7 @@ w_string watchman_dir::getFullPathToChild(w_string_piece extra) const {
     length = extra.size() + 1 /* separator */;
   }
   for (const watchman_dir* d = this; d; d = d->parent) {
-    length += d->name.size() + 1 /* separator OR final NUL terminator */;
+    length += d->nameLength + 1 /* separator OR final NUL terminator */;
   }
 
   auto* s = watchman::StringHeader::alloc(length - 1, W_STRING_BYTE);
@@ -75,8 +96,9 @@ w_string watchman_dir::getFullPathToChild(w_string_piece extra) const {
       --end;
       *end = '/';
     }
-    end -= d->name.size();
-    memcpy(end, d->name.data(), d->name.size());
+    auto name = d->getName();
+    end -= name.size();
+    memcpy(end, name.data(), name.size());
   }
 
   return w_string{s};

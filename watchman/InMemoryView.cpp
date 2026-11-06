@@ -234,7 +234,7 @@ std::optional<FileResult::ContentHash> InMemoryFileResult::getContentSha1() {
 ViewDatabase::ViewDatabase(const w_string& root_path)
     : rootPath_{root_path},
       filePool_{std::make_unique<FilePool>()},
-      rootDir_{std::make_unique<watchman_dir>(root_path, nullptr)} {}
+      rootDir_{watchman_dir::make(root_path, nullptr)} {}
 
 watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
   if (dir_name == rootPath_) {
@@ -270,9 +270,9 @@ watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
       // we have another pending item for the parent.  We'll create the
       // parent dir now and our other machinery will populate its contents
       // later.
-      w_string child_name(dir_component, (uint32_t)(sep - dir_component));
+      w_string_piece child_name(dir_component, sep - dir_component);
 
-      child = dir->dirs.insert(std::make_unique<watchman_dir>(child_name, dir))
+      child = dir->dirs.insert(watchman_dir::make(child_name, dir))
                   .first->get();
     }
 
@@ -293,9 +293,8 @@ watchman_dir* ViewDatabase::resolveDir(const w_string& dir_name, bool create) {
     dir_component = sep + 1;
   }
 
-  w_string child_name(dir_component, (uint32_t)(dir_end - dir_component));
-  return parent->dirs
-      .insert(std::make_unique<watchman_dir>(child_name, parent))
+  w_string_piece child_name(dir_component, dir_end - dir_component);
+  return parent->dirs.insert(watchman_dir::make(child_name, parent))
       .first->get();
 }
 
@@ -751,7 +750,7 @@ void InMemoryView::globGeneratorDoublestar(
     }
 
     auto subject = make_path_name(
-        dir_name, dir_name_len, child->name.data(), child->name.size());
+        dir_name, dir_name_len, child->getName().data(), child->nameLength);
     globGeneratorDoublestar(ctx, child, node, subject.data(), subject.size());
   }
 }
@@ -795,7 +794,7 @@ void InMemoryView::globGeneratorTree(
 
           if (wildmatch(
                   child_node->pattern.c_str(),
-                  child_dir->name.c_str(),
+                  child_dir->getName().data(),
                   ctx->query->glob_flags |
                       (ctx->query->case_sensitive ==
                                CaseSensitivity::CaseSensitive

@@ -133,7 +133,7 @@ class ViewDatabase {
   // because slabs point back at it.
   std::unique_ptr<FilePool> filePool_;
 
-  std::unique_ptr<watchman_dir> rootDir_;
+  watchman_dir::DirPtr rootDir_;
 
   // Inode number for the root dir.  This is used to detect what should
   // be impossible situations, but is needed in practice to workaround
