@@ -60,11 +60,15 @@ void PendingChanges::clear() {
 void PendingChanges::add(
     const w_string& path,
     std::chrono::system_clock::time_point now,
-    PendingFlags flags) {
+    PendingFlags flags,
+    uint64_t ino) {
   auto existing = tree_.search(path);
   if (existing) {
     /* Entry already exists: consolidate */
     consolidateItem(existing->get(), flags);
+    if (ino) {
+      (*existing)->ino = ino;
+    }
     /* all done */
     return;
   }
@@ -75,6 +79,7 @@ void PendingChanges::add(
 
   // Try to allocate the new node before we prune any children.
   auto p = std::make_shared<watchman_pending_fs>(path, now, flags);
+  p->ino = ino;
 
   maybePruneObsoletedChildren(path, flags);
 
@@ -88,8 +93,9 @@ void PendingChanges::add(
     watchman_dir* dir,
     const char* name,
     std::chrono::system_clock::time_point now,
-    PendingFlags flags) {
-  return add(dir->getFullPathToChild(name), now, flags);
+    PendingFlags flags,
+    uint64_t ino) {
+  return add(dir->getFullPathToChild(name), now, flags, ino);
 }
 
 void PendingChanges::startRefusingSyncs(std::string_view reason) {

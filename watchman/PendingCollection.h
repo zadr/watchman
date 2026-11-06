@@ -95,6 +95,9 @@ struct watchman_pending_fs : watchman::PendingChange {
   // We own the next entry and will destroy that chain when we
   // are destroyed.
   std::shared_ptr<watchman_pending_fs> next;
+  // Inode of a directory queued for crawling, or 0. Orders the crawl; see
+  // processAllPending.
+  uint64_t ino{0};
 
   watchman_pending_fs(
       w_string path,
@@ -138,12 +141,14 @@ class PendingChanges {
   void add(
       const w_string& path,
       std::chrono::system_clock::time_point now,
-      PendingFlags flags);
+      PendingFlags flags,
+      uint64_t ino = 0);
   void add(
       watchman_dir* dir,
       const char* name,
       std::chrono::system_clock::time_point now,
-      PendingFlags flags);
+      PendingFlags flags,
+      uint64_t ino = 0);
 
   /**
    * Add a sync request. The consumer of this sync should fulfill it after

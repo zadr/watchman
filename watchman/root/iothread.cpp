@@ -277,6 +277,33 @@ InMemoryView::Continue InMemoryView::stepIoThread(
   return Continue::Continue;
 }
 
+namespace {
+// Runs what processing one item queued (a crawled directory's
+// subdirectories) before the rest of the chain, so a crawl goes depth first,
+// in inode order. A subtree is then read while the filesystem's metadata for
+// it is still cached; going level by level, a large tree evicts it before
+// the children are reached. Order carries no meaning: cookies and syncs are
+// only resolved once everything is processed.
+std::shared_ptr<watchman_pending_fs> prependInInodeOrder(
+    std::shared_ptr<watchman_pending_fs> items,
+    std::shared_ptr<watchman_pending_fs> rest) {
+  std::vector<std::shared_ptr<watchman_pending_fs>> sorted;
+  while (items) {
+    auto next = std::move(items->next);
+    sorted.push_back(std::move(items));
+    items = std::move(next);
+  }
+  std::stable_sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) {
+    return a->ino < b->ino;
+  });
+  for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+    (*it)->next = std::move(rest);
+    rest = std::move(*it);
+  }
+  return rest;
+}
+} // namespace
+
 InMemoryView::IsDesynced InMemoryView::processAllPending(
     const std::shared_ptr<Root>& root,
     ViewDatabase& view,
@@ -333,7 +360,11 @@ InMemoryView::IsDesynced InMemoryView::processAllPending(
 
       // TODO: Document that continuing to run this loop when stopThreads_ is
       // true fixes a stack overflow when pending is long.
-      pending = std::move(pending->next);
+      auto next = std::move(pending->next);
+      if (coll.getPendingItemCount() != 0) {
+        next = prependInInodeOrder(coll.stealItems(), std::move(next));
+      }
+      pending = std::move(next);
     }
   }
 
@@ -616,7 +647,8 @@ void InMemoryView::crawler(
           dir,
           file->getName().data(),
           pending.now,
-          recursive ? W_PENDING_RECURSIVE : PendingFlags{});
+          recursive ? W_PENDING_RECURSIVE : PendingFlags{},
+          file->stat.ino);
     }
   }
 }
@@ -1060,7 +1092,8 @@ void InMemoryView::statPath(
           coll.add(
               pending.path,
               pending.now,
-              desynced_flag | W_PENDING_RECURSIVE | W_PENDING_CRAWL_ONLY);
+              desynced_flag | W_PENDING_RECURSIVE | W_PENDING_CRAWL_ONLY,
+              st.ino);
         } else if (pending.flags & W_PENDING_NONRECURSIVE_SCAN) {
           /* on file changes, we receive a notification on the directory and
            * thus we just need to crawl this one directory to consider all
