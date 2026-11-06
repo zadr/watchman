@@ -243,6 +243,17 @@ cpp_unittest(
 )
 
 cpp_unittest(
+    name = "watchmanfile",
+    srcs = ["WatchmanFileTest.cpp"],
+    network_access = network_access_utils.none(),
+    supports_static_listing = False,
+    deps = [
+        "fbsource//xplat/folly/portability:gtest",
+        "//watchman:view",
+    ],
+)
+
+cpp_unittest(
     name = "cache",
     srcs = [
         "CacheTest.cpp",

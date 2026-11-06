@@ -10,6 +10,8 @@
 #include "watchman/Clock.h"
 #include "watchman/fs/FileInformation.h"
 #include "watchman/watchman_dir.h"
+#include <limits>
+#include <optional>
 #include <vector>
 
 #pragma pack(push, 4)
@@ -27,6 +29,166 @@ struct CompactClockStamp {
   }
 };
 #pragma pack(pop)
+
+namespace watchman {
+
+#pragma pack(push, 4)
+
+/**
+ * A FileTime stored as nanoseconds since the epoch, which covers
+ * 1677-09-21 to 2262-04-11 exactly. Any other value, or a tv_nsec outside
+ * [0, 1e9), is kept exactly in a side table keyed by the field's address
+ * and the field holds kSpilled; records never move, so the key is stable.
+ *
+ * A field and its side table entry change only under the owning view's
+ * write lock, so a reader holding the read lock sees kSpilled exactly when
+ * the entry exists. The table has its own lock because views are
+ * independent.
+ */
+class PackedFileTime {
+ public:
+  PackedFileTime() = default;
+  PackedFileTime(const PackedFileTime&) = delete;
+  PackedFileTime& operator=(const PackedFileTime&) = delete;
+  ~PackedFileTime() {
+    if (ns_ == kSpilled) {
+      unspill();
+    }
+  }
+
+  PackedFileTime& operator=(FileTime t) {
+    if (auto ns = encode(t)) {
+      if (ns_ == kSpilled) {
+        unspill();
+      }
+      ns_ = *ns;
+    } else {
+      spill(t);
+    }
+    return *this;
+  }
+
+  /* implicit */ operator FileTime() const {
+    if (ns_ == kSpilled) {
+      return spilled();
+    }
+    // Floor division, without forming sec * kNsPerSec, which can overflow.
+    int64_t sec = ns_ / kNsPerSec;
+    int64_t nsec = ns_ % kNsPerSec;
+    if (nsec < 0) {
+      sec -= 1;
+      nsec += kNsPerSec;
+    }
+    FileTime t;
+    t.tv_sec = sec;
+    t.tv_nsec = static_cast<int32_t>(nsec);
+    return t;
+  }
+
+  /* implicit */ operator struct timespec() const {
+    return FileTime(*this);
+  }
+
+  bool isSpilled() const {
+    return ns_ == kSpilled;
+  }
+
+  static std::optional<int64_t> encode(FileTime t) {
+    if (t.tv_nsec < 0 || t.tv_nsec >= kNsPerSec) {
+      return std::nullopt;
+    }
+    if (t.tv_sec > kMaxSec ||
+        (t.tv_sec == kMaxSec && t.tv_nsec > kMaxSecNsec)) {
+      return std::nullopt;
+    }
+    // kSpilled is INT64_MIN, so the lowest stored value is INT64_MIN + 1.
+    if (t.tv_sec < kMinSec ||
+        (t.tv_sec == kMinSec && t.tv_nsec <= kMinSecNsec)) {
+      return std::nullopt;
+    }
+    if (t.tv_sec >= 0) {
+      return t.tv_sec * kNsPerSec + t.tv_nsec;
+    }
+    return (t.tv_sec + 1) * kNsPerSec + (t.tv_nsec - kNsPerSec);
+  }
+
+  static size_t spilledCount();
+
+ private:
+  static constexpr int64_t kNsPerSec = 1000000000;
+  static constexpr int64_t kSpilled = std::numeric_limits<int64_t>::min();
+  // INT64_MAX is kMaxSec seconds and kMaxSecNsec nanoseconds.
+  static constexpr int64_t kMaxSec =
+      std::numeric_limits<int64_t>::max() / kNsPerSec;
+  static constexpr int64_t kMaxSecNsec =
+      std::numeric_limits<int64_t>::max() % kNsPerSec;
+  // INT64_MIN is kMinSec seconds and kMinSecNsec nanoseconds.
+  static constexpr int64_t kMinSec =
+      std::numeric_limits<int64_t>::min() / kNsPerSec - 1;
+  static constexpr int64_t kMinSecNsec =
+      kNsPerSec + std::numeric_limits<int64_t>::min() % kNsPerSec;
+
+  void spill(FileTime t);
+  void unspill();
+  FileTime spilled() const;
+
+  int64_t ns_{0};
+};
+static_assert(sizeof(PackedFileTime) == 8);
+
+/**
+ * FileInformation as stored in a watchman_file, with each time in 8 bytes
+ * rather than 12.
+ */
+struct StoredFileInformation {
+  uint64_t size{0};
+  uid_t uid{0};
+  gid_t gid{0};
+  ino_t ino{0};
+  dev_t dev{0};
+  mode_t mode{0};
+  nlink_t nlink{0};
+#ifdef _WIN32
+  uint32_t fileAttributes{0};
+#endif
+  PackedFileTime atime;
+  PackedFileTime mtime;
+  PackedFileTime ctime;
+
+  StoredFileInformation() = default;
+  StoredFileInformation(const StoredFileInformation&) = delete;
+  StoredFileInformation& operator=(const StoredFileInformation&) = delete;
+
+  StoredFileInformation& operator=(const FileInformation& info);
+  /* implicit */ operator FileInformation() const;
+
+  DType dtype() const {
+    return typeOnly().dtype();
+  }
+  bool isSymlink() const {
+    return typeOnly().isSymlink();
+  }
+  bool isDir() const {
+    return typeOnly().isDir();
+  }
+  bool isFile() const {
+    return typeOnly().isFile();
+  }
+
+ private:
+  FileInformation typeOnly() const {
+    FileInformation info;
+    info.mode = mode;
+#ifdef _WIN32
+    info.fileAttributes = fileAttributes;
+#endif
+    return info;
+  }
+};
+
+#pragma pack(pop)
+
+} // namespace watchman
 
 struct watchman_file;
 
@@ -115,7 +277,7 @@ struct watchman_file {
 
   /* cache stat results so we can tell if an entry
    * changed */
-  watchman::FileInformation stat;
+  watchman::StoredFileInformation stat;
 
   /* whether we believe that this file still exists */
   bool exists;

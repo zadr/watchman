@@ -278,6 +278,9 @@ cpp_library(
         "watchman_dir.h",
         "watchman_file.h",
     ],
+    deps = [
+        "fbsource//xplat/folly:synchronized",
+    ],
     exported_deps = [
         ":clock",
         ":string",

@@ -835,23 +835,23 @@ void InMemoryView::crawlerParallel(
 
 namespace {
 bool did_file_change(
-    const FileInformation* saved,
-    const FileInformation* fresh) {
+    const FileInformation& saved,
+    const FileInformation& fresh) {
   /* we have to compare this way because the stat structure
    * may contain fields that vary and that don't impact our
    * understanding of the file */
 
-#define FIELD_CHG(name)             \
-  if (saved->name != fresh->name) { \
-    return true;                    \
+#define FIELD_CHG(name)           \
+  if (saved.name != fresh.name) { \
+    return true;                  \
   }
 
   // Can't compare with memcmp due to padding and garbage in the struct
   // on OpenBSD, which has a 32-bit tv_sec + 64-bit tv_nsec
 #define TIMESPEC_FIELD_CHG(wat)                           \
   {                                                       \
-    struct timespec a = saved->wat##time;                 \
-    struct timespec b = fresh->wat##time;                 \
+    struct timespec a = saved.wat##time;                  \
+    struct timespec b = fresh.wat##time;                  \
     if (a.tv_sec != b.tv_sec || a.tv_nsec != b.tv_nsec) { \
       return true;                                        \
     }                                                     \
@@ -859,7 +859,7 @@ bool did_file_change(
 
   FIELD_CHG(mode);
 
-  if (!saved->isDir()) {
+  if (!saved.isDir()) {
     FIELD_CHG(size);
     FIELD_CHG(nlink);
   }
@@ -1042,7 +1042,7 @@ void InMemoryView::statPath(
        * to crawl it again */
       recursive = true;
     }
-    if (!file->exists || via_notify || did_file_change(&file->stat, &st)) {
+    if (!file->exists || via_notify || did_file_change(file->stat, st)) {
       logf(
           DBG,
           "file changed exists={} via_notify={} stat-changed={} isdir={} size={} {}\n",
@@ -1064,7 +1064,7 @@ void InMemoryView::statPath(
       }
     }
 
-    memcpy(&file->stat, &st, sizeof(file->stat));
+    file->stat = st;
     watcher_->startWatchFile(file);
 
     if (st.isDir()) {

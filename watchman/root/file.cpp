@@ -7,6 +7,8 @@
 
 #include "watchman/watchman_file.h"
 #include <folly/Memory.h>
+#include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
 #include <folly/memory/SanitizeAddress.h>
 #include <limits>
 #ifndef _WIN32
@@ -16,6 +18,76 @@
 #ifdef __APPLE__
 #include <sys/attr.h> // @manual
 #endif
+
+namespace watchman {
+
+namespace {
+using SpillTable =
+    folly::Synchronized<folly::F14FastMap<const PackedFileTime*, FileTime>>;
+
+SpillTable& spillTable() {
+  static auto* table = new SpillTable();
+  return *table;
+}
+} // namespace
+
+void PackedFileTime::spill(FileTime t) {
+  spillTable().wlock()->insert_or_assign(this, t);
+  ns_ = kSpilled;
+}
+
+void PackedFileTime::unspill() {
+  spillTable().wlock()->erase(this);
+}
+
+FileTime PackedFileTime::spilled() const {
+  auto table = spillTable().rlock();
+  auto it = table->find(this);
+  w_check(it != table->end(), "spilled FileTime missing from the table");
+  return it->second;
+}
+
+size_t PackedFileTime::spilledCount() {
+  return spillTable().rlock()->size();
+}
+
+StoredFileInformation& StoredFileInformation::operator=(
+    const FileInformation& info) {
+  size = info.size;
+  uid = info.uid;
+  gid = info.gid;
+  ino = info.ino;
+  dev = info.dev;
+  mode = info.mode;
+  nlink = info.nlink;
+#ifdef _WIN32
+  fileAttributes = info.fileAttributes;
+#endif
+  atime = info.atime;
+  mtime = info.mtime;
+  ctime = info.ctime;
+  return *this;
+}
+
+StoredFileInformation::operator FileInformation() const {
+  FileInformation info;
+  info.size = size;
+  info.uid = uid;
+  info.gid = gid;
+  info.ino = ino;
+  info.dev = dev;
+  info.mode = mode;
+  info.nlink = nlink;
+#ifdef _WIN32
+  info.fileAttributes = fileAttributes;
+#endif
+  info.atime = atime;
+  info.mtime = mtime;
+  info.ctime = ctime;
+  return info;
+}
+
+} // namespace watchman
 
 void watchman_file::removeFromFileList() {
   if (next) {
