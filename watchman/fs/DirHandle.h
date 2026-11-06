@@ -37,10 +37,18 @@ class DirHandle {
  * Returns a dir handle to path.
  * Does not follow symlinks if strict == true.
  * Throws std::system_error if the dir could not be opened.
+ *
+ * On countedDev, the directory entry count matches what a listing returns
+ * and st_nlink is entries + 2. There, a listing stops after the counted
+ * entries without asking for an empty batch, and subdirectories report
+ * that nlink rather than ATTR_DIR_LINKCOUNT, which is 1 on APFS. Entries
+ * added after the open may be missed, as POSIX already allows for readdir;
+ * the watcher reports them.
  */
 std::unique_ptr<DirHandle> openDir(
     const char* path,
     bool strict = true,
-    CaseSensitivity caseSensitive = CaseSensitivity::Unknown);
+    CaseSensitivity caseSensitive = CaseSensitivity::Unknown,
+    std::optional<dev_t> countedDev = std::nullopt);
 
 } // namespace watchman

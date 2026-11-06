@@ -8,6 +8,7 @@
 #include "watchman/fs/DirHandle.h"
 
 #include <fmt/core.h>
+#include <algorithm>
 #include <folly/String.h>
 #include <system_error>
 #include "watchman/Errors.h"
@@ -57,7 +58,11 @@ typedef struct {
                  // e.g., by masking with ~S_IFMT.
   uint64_t ino; // ATTR_CMN_FILEID
   uint32_t link; // ATTR_FILE_LINKCOUNT or ATTR_DIR_LINKCOUNT
-  off_t file_size; // ATTR_FILE_TOTALSIZE
+  // Entries carry only the attribute group for their type.
+  union {
+    off_t file_size; // ATTR_FILE_TOTALSIZE
+    uint32_t entry_count; // ATTR_DIR_ENTRYCOUNT
+  } __attribute__((packed));
 
 } __attribute__((packed)) bulk_attr_item;
 #endif
@@ -72,6 +77,10 @@ class UnixDirHandle : public DirHandle {
   char buf_[64 * (sizeof(bulk_attr_item) + NAME_MAX * 3 + 1)];
   char* cursor_{nullptr};
   std::optional<uint32_t> entryCount_;
+  std::optional<dev_t> countedDev_;
+  // Set when entryCount_ is exact; the listing stops after that many.
+  bool exactCount_{false};
+  uint32_t listed_{0};
 
   void checkOpenedDir(const char* path, bool checkCase);
 #endif
@@ -79,7 +88,11 @@ class UnixDirHandle : public DirHandle {
   struct DirEntry ent_;
 
  public:
-  UnixDirHandle(const char* path, bool strict, CaseSensitivity caseSensitive);
+  UnixDirHandle(
+      const char* path,
+      bool strict,
+      CaseSensitivity caseSensitive,
+      std::optional<dev_t> countedDev);
   ~UnixDirHandle() override;
   const DirEntry* readDir() override;
   int getFd() const override;
@@ -140,8 +153,13 @@ static bool use_bulkstat_by_default() {
 
 #ifndef _WIN32
 std::unique_ptr<DirHandle>
-openDir(const char* path, bool strict, CaseSensitivity caseSensitive) {
-  return std::make_unique<UnixDirHandle>(path, strict, caseSensitive);
+openDir(
+    const char* path,
+    bool strict,
+    CaseSensitivity caseSensitive,
+    std::optional<dev_t> countedDev) {
+  return std::make_unique<UnixDirHandle>(
+      path, strict, caseSensitive, countedDev);
 }
 
 #ifdef HAVE_GETATTRLISTBULK
@@ -187,9 +205,10 @@ static const std::unordered_map<uint32_t, const char*> commonLabels = {
 UnixDirHandle::UnixDirHandle(
     const char* path,
     bool strict,
-    [[maybe_unused]] CaseSensitivity caseSensitive)
+    [[maybe_unused]] CaseSensitivity caseSensitive,
+    [[maybe_unused]] std::optional<dev_t> countedDev)
 #ifdef HAVE_GETATTRLISTBULK
-    : dirName_(path)
+    : dirName_(path), countedDev_(countedDev)
 #endif
 {
 #ifdef HAVE_GETATTRLISTBULK
@@ -223,7 +242,7 @@ UnixDirHandle::UnixDirHandle(
         ATTR_CMN_CHGTIME | ATTR_CMN_ACCTIME | ATTR_CMN_OWNERID |
         ATTR_CMN_GRPID | ATTR_CMN_ACCESSMASK | ATTR_CMN_FILEID;
 
-    attrlist_.dirattr = ATTR_DIR_LINKCOUNT;
+    attrlist_.dirattr = ATTR_DIR_LINKCOUNT | ATTR_DIR_ENTRYCOUNT;
     attrlist_.fileattr = ATTR_FILE_TOTALSIZE | ATTR_FILE_LINKCOUNT;
     return;
   }
@@ -246,12 +265,13 @@ UnixDirHandle::UnixDirHandle(
 void UnixDirHandle::checkOpenedDir(const char* path, bool checkCase) {
   struct attrlist attrs {};
   attrs.bitmapcount = ATTR_BIT_MAP_COUNT;
-  attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME;
+  attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_DEVID;
   attrs.dirattr = ATTR_DIR_ENTRYCOUNT;
   struct {
     uint32_t len;
     attribute_set_t returned;
     attrreference_t name;
+    dev_t dev;
     uint32_t entryCount;
     char nameBuf[NAME_MAX * 3 + 1];
   } __attribute__((packed)) out;
@@ -261,6 +281,8 @@ void UnixDirHandle::checkOpenedDir(const char* path, bool checkCase) {
   }
   if (out.returned.dirattr & ATTR_DIR_ENTRYCOUNT) {
     entryCount_ = out.entryCount;
+    exactCount_ = countedDev_ && (out.returned.commonattr & ATTR_CMN_DEVID) &&
+        out.dev == *countedDev_;
   }
   if (checkCase) {
     if (!(out.returned.commonattr & ATTR_CMN_NAME) ||
@@ -283,6 +305,9 @@ const DirEntry* UnixDirHandle::readDir() {
     bulk_attr_item* item;
 
     if (!cursor_) {
+      if (exactCount_ && listed_ >= *entryCount_) {
+        return nullptr;
+      }
       // Read the next batch of results
       int retcount;
 
@@ -314,6 +339,7 @@ const DirEntry* UnixDirHandle::readDir() {
     // Decode the next item
     item = (bulk_attr_item*)cursor_;
     cursor_ += item->len;
+    listed_++;
     if (cursor_ > buf_ + sizeof(buf_)) {
       // This shouldn't happen in practice: the man page indicates that ERANGE
       // is returned from getattrlistbulk() if the buffer isn't large enough
@@ -415,7 +441,13 @@ const DirEntry* UnixDirHandle::readDir() {
         break;
       case VDIR:
         ent_.stat.mode |= S_IFDIR;
-        ent_.stat.nlink = item->link;
+        if (countedDev_ && item->dev == *countedDev_ &&
+            (item->returned.dirattr & ATTR_DIR_ENTRYCOUNT)) {
+          // As stat computes it, saturating like its 16-bit st_nlink.
+          ent_.stat.nlink = std::min<uint32_t>(item->entry_count + 2, UINT16_MAX);
+        } else {
+          ent_.stat.nlink = item->link;
+        }
         break;
       case VLNK:
         ent_.stat.mode |= S_IFLNK;

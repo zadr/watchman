@@ -8,6 +8,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 #include "watchman/Clock.h"
@@ -102,6 +103,16 @@ class RootConfig {
   const CaseSensitivity case_sensitive;
   const IgnoreSet ignore;
   const FileInformation stat;
+
+  /** The device whose directory entry counts openDir may trust; see there. */
+  std::optional<dev_t> countedDirsDev() const {
+    // Checked across 408K APFS dirs and on HFS+. exFAT and FAT don't return
+    // ATTR_DIR_ENTRYCOUNT; other filesystems are unverified.
+    if (fs_type == "apfs" || fs_type == "hfs") {
+      return stat.dev;
+    }
+    return std::nullopt;
+  }
 };
 
 /**

@@ -9,8 +9,11 @@
 #include <folly/testing/TestUtil.h>
 #include <folly/portability/GTest.h>
 #include <fstream>
+#include <optional>
+#include <set>
 #include <system_error>
 #include "watchman/Errors.h"
+#include "watchman/fs/DirHandle.h"
 #include "watchman/fs/FSDetect.h"
 
 #ifndef _WIN32
@@ -196,6 +199,53 @@ TEST_F(GetFileInformationTest, matchesLstat) {
         "/Sticky",
         "/DirLink"}) {
     expectSameAsLstat(root_ + name, cs_);
+  }
+}
+
+namespace {
+// Lists path the way the crawler does and compares against lstat.
+void expectListingMatchesLstat(
+    const std::string& path,
+    std::optional<dev_t> countedDev,
+    std::set<std::string> want) {
+  auto dir = openDir(path.c_str(), true, CaseSensitivity::Unknown, countedDev);
+  std::set<std::string> got;
+  while (auto ent = dir->readDir()) {
+    got.insert(ent->d_name);
+    ASSERT_TRUE(ent->has_stat) << ent->d_name;
+    struct stat st;
+    ASSERT_EQ(0, lstat((path + "/" + ent->d_name).c_str(), &st));
+    if (ent->stat.isDir() && countedDev) {
+      EXPECT_EQ(st.st_nlink, ent->stat.nlink) << ent->d_name;
+    }
+  }
+  EXPECT_EQ(want, got) << path;
+}
+} // namespace
+
+TEST_F(GetFileInformationTest, countedListing) {
+  mkdirOrThrow(root_ + "/Empty");
+  mkdirOrThrow(root_ + "/Dir/Sub");
+  for (int i = 0; i < 300; ++i) {
+    writeFile(root_ + "/Dir/Sub/f" + std::to_string(i));
+  }
+  struct stat st;
+  ASSERT_EQ(0, lstat(root_.c_str(), &st));
+  auto fsType = w_fstype(root_.c_str());
+  std::optional<dev_t> counted;
+  if (fsType == "apfs" || fsType == "hfs") {
+    counted = st.st_dev;
+  }
+  std::set<std::string> sub;
+  for (int i = 0; i < 300; ++i) {
+    sub.insert("f" + std::to_string(i));
+  }
+  for (auto dev : {std::optional<dev_t>{}, counted}) {
+    expectListingMatchesLstat(root_, dev, {"Dir", "DirLink", "Empty"});
+    expectListingMatchesLstat(
+        root_ + "/Dir", dev, {"File.txt", "FileLink", "Sub"});
+    expectListingMatchesLstat(root_ + "/Dir/Sub", dev, sub);
+    expectListingMatchesLstat(root_ + "/Empty", dev, {});
   }
 }
 
