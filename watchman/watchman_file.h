@@ -10,6 +10,7 @@
 #include "watchman/Clock.h"
 #include "watchman/fs/FileInformation.h"
 #include "watchman/watchman_dir.h"
+#include <vector>
 
 #pragma pack(push, 4)
 // ClockStamp without padding. The timestamp is unsigned 32-bit seconds,
@@ -34,8 +35,10 @@ struct watchman_file;
  *
  * A record is the struct plus its name, so sizes vary. malloc rounds them
  * up to the next size class, which above 128 bytes is 32 bytes wide on
- * recent macOS; the pool rounds to 8. Released records go on a free list
- * for their size. Slabs are only returned when the pool is destroyed.
+ * recent macOS; the pool rounds to 8. Each slab serves a single size and
+ * has its own free list. An empty slab's pages go straight back to the
+ * kernel, so deleted trees give their memory back. (malloc keeps freed
+ * 16KB blocks dirty, so slabs come from mmap rather than malloc.)
  *
  * Not thread safe: the owning ViewDatabase serializes all calls under its
  * write lock.
@@ -51,16 +54,27 @@ class FilePool {
   static void release(void* ptr, size_t size);
 
  private:
-  struct Slab {
-    FilePool* pool;
-    Slab* next;
-  };
   struct FreeBlock {
     FreeBlock* next;
   };
+  struct Slab {
+    FilePool* pool;
+    Slab* prev;
+    Slab* next;
+    FreeBlock* free;
+    char* cursor;
+    uint32_t live;
+    uint32_t sizeClass;
+  };
+  // Slabs of one size class. Every slab is on exactly one list.
+  struct SizeClass {
+    Slab* available{nullptr};
+    Slab* full{nullptr};
+  };
 
   // Power of two: a pooled record's slab is found by masking its address.
-  static constexpr size_t kSlabSize = 64 * 1024;
+  static constexpr size_t kSlabSize = 16 * 1024;
+  static constexpr size_t kRegionSize = 1024 * 1024;
   static constexpr size_t kGranule = 8;
   // Larger records (names over ~900 bytes) go straight to malloc.
   static constexpr size_t kMaxPooled = 1024;
@@ -68,12 +82,19 @@ class FilePool {
   static size_t roundUp(size_t size) {
     return (size + kGranule - 1) & ~(kGranule - 1);
   }
-  void pushFree(void* ptr, size_t size);
+  static void unlink(Slab*& head, Slab* slab);
+  static void push(Slab*& head, Slab* slab);
+  void releaseToSlab(Slab* slab, void* ptr, size_t size);
+  void* newSlabMemory();
+  void freeSlabMemory(void* slab);
 
-  FreeBlock* freeLists_[kMaxPooled / kGranule + 1]{};
-  char* cursor_{nullptr};
-  char* end_{nullptr};
-  Slab* slabs_{nullptr};
+  SizeClass classes_[kMaxPooled / kGranule + 1];
+#ifndef _WIN32
+  std::vector<void*> regions_;
+  std::vector<void*> emptySlabs_;
+  char* regionCursor_{nullptr};
+  char* regionEnd_{nullptr};
+#endif
 };
 
 struct watchman_file {
